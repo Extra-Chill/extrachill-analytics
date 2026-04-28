@@ -35,8 +35,12 @@ function extrachill_analytics_classify_search_payload( $term ) {
 		return null;
 	}
 
-	// Normalize once: HTML-entity decode (attackers double-encode), strip slashes.
-	$normalized = wp_unslash( $term );
+	// Build two views of the input: the raw term (for patterns that target
+	// URL-encoded markers like %25%27) and a fully-decoded form (for patterns
+	// that target literal characters even when attackers double-encode them).
+	// Each catalog entry can opt into 'raw' matching via the 'match_raw' key.
+	$raw        = wp_unslash( $term );
+	$normalized = $raw;
 	$normalized = html_entity_decode( $normalized, ENT_QUOTES | ENT_HTML5, 'UTF-8' );
 	$normalized = rawurldecode( $normalized );
 
@@ -112,7 +116,59 @@ function extrachill_analytics_classify_search_payload( $term ) {
 			'pattern_family' => 'lfi',
 			'regex'          => '/\/etc\/passwd\b/i',
 		),
-		// Excessive length — legitimate searches are rarely > 200 chars.
+		// Scanner session markers — sqlmap / AcuneticX-style fingerprints.
+		array(
+			'pattern_name'   => 'scanner_marker',
+			'pattern_family' => 'scanner',
+			// e.g. @@OZOin @@z5T3X @@3IOVO — sqlmap uses @@ prefix for unique session ids.
+			'regex'          => '/^@@[A-Za-z0-9]{4,8}$/',
+		),
+		array(
+			'pattern_name'   => 'scanner_quote_probe',
+			'pattern_family' => 'scanner',
+			// e.g. 1'", the'", 1&#039;&quot;1000 — quote-injection probes.
+			// Match a short token followed by quote(s) (raw or HTML-encoded) optionally trailed by digits.
+			'regex'          => '/^[a-z0-9\/]{0,40}(?:\'|&#039;|&apos;)+(?:"|&quot;)+(?:\d{1,4})?$/i',
+		),
+		array(
+			'pattern_name'   => 'scanner_path_enum',
+			'pattern_family' => 'scanner',
+			// e.g. the/page/page/3/0qah8bhh2pp4.jsp — random-token file probes.
+			// Token + /page/ chain + optional numeric segment + random alphanumeric token + extension.
+			// Allows arbitrary path segments between /page/ and the random token.
+			'regex'          => '/\/page(?:\/[a-z0-9]+)+\.(?:html|jsp|asp|aspx|php)$/i',
+		),
+		array(
+			'pattern_name'   => 'scanner_path_enum',
+			'pattern_family' => 'scanner',
+			// Repeated /page chains — humans don't type "/page/page" twice.
+			// Two or more "/page" segments in sequence.
+			'regex'          => '/\/page\/page/i',
+		),
+		array(
+			'pattern_name'   => 'scanner_quote_probe',
+			'pattern_family' => 'scanner',
+			// Bare quote+backslash escape probes: '\", "\\\\'\\\\\\".
+			'regex'          => '/(?:\\\\\\\\\'|\\\\\\\\")|^[\'"]+\\\\+[\'"]+$/',
+		),
+		array(
+			'pattern_name'   => 'scanner_encoded_gibberish',
+			'pattern_family' => 'scanner',
+			// e.g. 1????%2527%2522\\'\\\" — literal ???? markers + URL-encoded quotes.
+			// Match against the RAW (un-decoded) input so the %25 prefix survives.
+			'regex'          => '/\?{3,}%25/',
+			'match_raw'      => true,
+		),
+		array(
+			'pattern_name'   => 'scanner_encoded_gibberish',
+			'pattern_family' => 'scanner',
+			// Double-URL-encoded quote pairs: %2527%2522 anywhere.
+			// %2527 is double-encoded ' (apostrophe), %2522 is double-encoded ".
+			// No legitimate human search contains this shape. Match raw.
+			'regex'          => '/%25(?:27|22)%25(?:27|22)/i',
+			'match_raw'      => true,
+		),
+		// Excessive length — legitimate searches are rarely > 300 chars.
 		array(
 			'pattern_name'   => 'length_abuse',
 			'pattern_family' => 'abuse',
@@ -134,7 +190,8 @@ function extrachill_analytics_classify_search_payload( $term ) {
 		if ( empty( $entry['regex'] ) ) {
 			continue;
 		}
-		if ( @preg_match( $entry['regex'], $normalized, $matches ) === 1 ) {
+		$haystack = ! empty( $entry['match_raw'] ) ? $raw : $normalized;
+		if ( @preg_match( $entry['regex'], $haystack, $matches ) === 1 ) {
 			return array(
 				'pattern_name'   => isset( $entry['pattern_name'] ) ? (string) $entry['pattern_name'] : 'unknown',
 				'pattern_family' => isset( $entry['pattern_family'] ) ? (string) $entry['pattern_family'] : 'unknown',
