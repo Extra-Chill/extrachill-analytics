@@ -132,7 +132,10 @@ function extrachill_analytics_ability_get_php_error_summary( $input ) {
 
 	$where_clause = implode( ' AND ', $where );
 
-	// phpcs:disable WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+	// $table is an internal constant table name and $where_clause is built only
+	// from hardcoded fragments whose values are bound via %s placeholders in
+	// $values, so the interpolated query is safe.
+	// phpcs:disable WordPress.DB.PreparedSQL.InterpolatedNotPrepared, WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
 	$sql = "SELECT signature, severity, file_line, sample_message,
 				SUM(count) AS total_count,
 				MIN(first_seen) AS first_seen,
@@ -143,9 +146,9 @@ function extrachill_analytics_ability_get_php_error_summary( $input ) {
 			GROUP BY signature, severity, file_line, sample_message";
 
 	$persisted = empty( $values )
-		? $wpdb->get_results( $sql ) // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared -- safe: $sql interpolates only an internal table name and a constant 1=1 where-clause when $values is empty.
+		? $wpdb->get_results( $sql )
 		: $wpdb->get_results( $wpdb->prepare( $sql, $values ) );
-	// phpcs:enable WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQL.NotPrepared,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching
+	// phpcs:enable WordPress.DB.PreparedSQL.InterpolatedNotPrepared, WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
 
 	$agg          = array();
 	$covered_days = array();
