@@ -143,9 +143,9 @@ function extrachill_analytics_ability_get_php_error_summary( $input ) {
 			GROUP BY signature, severity, file_line, sample_message";
 
 	$persisted = empty( $values )
-		? $wpdb->get_results( $sql )
+		? $wpdb->get_results( $sql ) // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared -- safe: $sql interpolates only an internal table name and a constant 1=1 where-clause when $values is empty.
 		: $wpdb->get_results( $wpdb->prepare( $sql, $values ) );
-	// phpcs:enable WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+	// phpcs:enable WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQL.NotPrepared,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching
 
 	$agg          = array();
 	$covered_days = array();

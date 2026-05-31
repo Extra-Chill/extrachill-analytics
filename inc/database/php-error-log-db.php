@@ -23,7 +23,7 @@ define( 'EXTRACHILL_ANALYTICS_PHP_ERROR_DB_VERSION_OPTION', 'extrachill_analytic
 function extrachill_analytics_php_error_create_table() {
 	$current_db_version = get_site_option( EXTRACHILL_ANALYTICS_PHP_ERROR_DB_VERSION_OPTION );
 
-	if ( $current_db_version === EXTRACHILL_ANALYTICS_PHP_ERROR_DB_VERSION ) {
+	if ( EXTRACHILL_ANALYTICS_PHP_ERROR_DB_VERSION === $current_db_version ) {
 		return;
 	}
 

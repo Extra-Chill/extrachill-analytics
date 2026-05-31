@@ -153,7 +153,7 @@ function extrachill_analytics_parse_php_error_log( $log_path, $since_ts = null, 
 		}
 	};
 
-	while ( false !== ( $line = fgets( $handle ) ) ) {
+	for ( $line = fgets( $handle ); false !== $line; $line = fgets( $handle ) ) {
 		$ts = extrachill_analytics_parse_log_timestamp( $line );
 
 		if ( null !== $ts || preg_match( '/^\[/', $line ) ) {
@@ -414,7 +414,7 @@ function extrachill_analytics_snapshot_php_errors() {
 		$daily[ $day ][ $sig ]['last_ts']  = max( $daily[ $day ][ $sig ]['last_ts'], $entry['ts'] );
 	};
 
-	while ( false !== ( $line = fgets( $handle ) ) ) {
+	for ( $line = fgets( $handle ); false !== $line; $line = fgets( $handle ) ) {
 		$read_bytes += strlen( $line );
 		$ts          = extrachill_analytics_parse_log_timestamp( $line );
 
@@ -443,7 +443,7 @@ function extrachill_analytics_snapshot_php_errors() {
 		foreach ( $signatures as $sig => $data ) {
 			$summary['entries'] += $data['count'];
 
-			// phpcs:disable WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+			// phpcs:disable WordPress.DB.PreparedSQL.InterpolatedNotPrepared, WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
 			$wpdb->query(
 				$wpdb->prepare(
 					"INSERT INTO {$table}
