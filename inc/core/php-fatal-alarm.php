@@ -51,6 +51,11 @@ const EXTRACHILL_ANALYTICS_FATAL_ALARM_STATE_OPTION = 'extrachill_analytics_fata
 const EXTRACHILL_ANALYTICS_FATAL_ALARM_CHANNEL_OPTION = 'extrachill_analytics_fatal_alarm_channel';
 
 /**
+ * Site-option key for the Discord user id to @mention on an alarm.
+ */
+const EXTRACHILL_ANALYTICS_FATAL_ALARM_MENTION_OPTION = 'extrachill_analytics_fatal_alarm_mention';
+
+/**
  * Register the ~5-minute cron interval used by the alarm.
  *
  * The network already fires `wp cron event run --due-now` per site every 5 min
@@ -95,6 +100,46 @@ function extrachill_analytics_fatal_alarm_cron() {
 add_action( EXTRACHILL_ANALYTICS_FATAL_ALARM_HOOK, 'extrachill_analytics_fatal_alarm_cron' );
 
 /**
+ * Marker source stamped on this plugin's dispatch so the scoped permission
+ * grant below only ever authorizes OUR own fatal-alarm dispatch — never a
+ * blanket grant on agents/dispatch-message.
+ */
+const EXTRACHILL_ANALYTICS_FATAL_ALARM_DISPATCH_SOURCE = 'extrachill-analytics-fatal-alarm';
+
+/**
+ * Grant agents/dispatch-message permission for the alarm's own dispatch only.
+ *
+ * The alarm runs in cron context (no logged-in user), but the dispatch ability
+ * gates on manage_options. Rather than weaken the ability globally, we narrowly
+ * authorize ONLY dispatches this plugin originated (identified by our metadata
+ * source marker) AND only in a trusted server context (cron or WP-CLI). All
+ * other callers are unaffected and still hit the default gate.
+ *
+ * @param bool  $allowed Current decision from the ability's default gate.
+ * @param array $input   Canonical dispatch-message input.
+ * @return bool Whether to allow the dispatch.
+ */
+function extrachill_analytics_grant_fatal_alarm_dispatch_permission( $allowed, $input ) {
+	if ( $allowed ) {
+		return true;
+	}
+
+	$source = '';
+	if ( is_array( $input ) && isset( $input['metadata']['source'] ) ) {
+		$source = (string) $input['metadata']['source'];
+	}
+
+	if ( EXTRACHILL_ANALYTICS_FATAL_ALARM_DISPATCH_SOURCE !== $source ) {
+		return $allowed;
+	}
+
+	$trusted_context = ( defined( 'DOING_CRON' ) && DOING_CRON ) || ( defined( 'WP_CLI' ) && WP_CLI );
+
+	return $trusted_context ? true : $allowed;
+}
+add_filter( 'agents_dispatch_message_permission', 'extrachill_analytics_grant_fatal_alarm_dispatch_permission', 10, 2 );
+
+/**
  * The fatal-rate threshold (fatals per hour) above which a signature alarms.
  *
  * A 0->nonzero NEW fatal always alarms regardless of this threshold; the
@@ -134,6 +179,50 @@ function extrachill_analytics_fatal_alarm_channel() {
 	 * @param string $channel Discord channel id.
 	 */
 	return (string) apply_filters( 'extrachill_analytics_fatal_alarm_channel', $channel );
+}
+
+/**
+ * Resolve the Discord user id to @mention when an alarm fires.
+ *
+ * The mention is injected into the dispatched prompt/message body so a human is
+ * actually paged (a channel post with no mention notifies nobody). Resolution:
+ * site option -> filter -> '' (no mention). No user id is hardcoded in source;
+ * the default is empty so an unconfigured install simply doesn't mention anyone.
+ *
+ * @return string Discord user id, or '' for no mention.
+ */
+function extrachill_analytics_fatal_alarm_mention() {
+	$mention = (string) get_site_option( EXTRACHILL_ANALYTICS_FATAL_ALARM_MENTION_OPTION, '' );
+
+	/**
+	 * Filter the Discord user id the fatal-rate alarm @mentions.
+	 *
+	 * @param string $mention Discord user id, or '' for no mention.
+	 */
+	return (string) apply_filters( 'extrachill_analytics_fatal_alarm_mention', $mention );
+}
+
+/**
+ * Resolve the dispatch channel id used to spawn a coding-agent session.
+ *
+ * This is the *transport channel* name registered with the canonical
+ * `agents/dispatch-message` ability (a CLI runtime that opens an agent thread),
+ * NOT a Discord channel id. The value is config-resolved so no transport/vendor
+ * name is hardcoded in this layer (layer purity): option -> filter -> default.
+ *
+ * @return string Dispatch channel id, or '' to disable agent dispatch.
+ */
+function extrachill_analytics_fatal_alarm_dispatch_channel() {
+	$channel = (string) get_site_option( 'extrachill_analytics_fatal_alarm_dispatch_channel', 'kimaki' );
+
+	/**
+	 * Filter the agents/dispatch-message channel the alarm spawns a session on.
+	 *
+	 * Set to '' to disable agent dispatch and fall back to a plain Discord post.
+	 *
+	 * @param string $channel Dispatch transport channel id.
+	 */
+	return (string) apply_filters( 'extrachill_analytics_fatal_alarm_dispatch_channel', $channel );
 }
 
 /**
@@ -208,7 +297,7 @@ function extrachill_analytics_fatal_alarm_severities() {
  *     candidates:array<int, array<string, mixed>>,
  *     alarms:array<int, array<string, mixed>>,
  *     dry_run:bool,
- *     beacon:array{attempted:bool, sent:int, channel:string, ability:bool}
+ *     beacon:array{attempted:bool, sent:int, channel:string, can_dispatch:bool, can_notify:bool}
  * }
  */
 function extrachill_analytics_evaluate_fatal_alarm( $dry_run = false ) {
@@ -229,10 +318,11 @@ function extrachill_analytics_evaluate_fatal_alarm( $dry_run = false ) {
 		'alarms'         => array(),
 		'dry_run'        => (bool) $dry_run,
 		'beacon'         => array(
-			'attempted' => false,
-			'sent'      => 0,
-			'channel'   => '',
-			'ability'   => function_exists( 'wp_get_ability' ) && null !== wp_get_ability( 'datamachine/post-message-discord' ),
+			'attempted'    => false,
+			'sent'         => 0,
+			'channel'      => '',
+			'can_dispatch' => function_exists( 'wp_get_ability' ) && null !== wp_get_ability( 'agents/dispatch-message' ),
+			'can_notify'   => function_exists( 'wp_get_ability' ) && null !== wp_get_ability( 'datamachine/post-message-discord' ),
 		),
 	);
 
@@ -391,21 +481,35 @@ function extrachill_analytics_evaluate_fatal_alarm( $dry_run = false ) {
 }
 
 /**
- * Deliver a single fatal-rate alarm to Discord via the DMB ability.
+ * Deliver a single fatal-rate alarm.
  *
- * Degrades gracefully (returns false) when the DMB Discord ability is absent
- * or the channel is unconfigured.
+ * Primary path: spawn a coding-agent session via the canonical
+ * `agents/dispatch-message` ability so the bot is actually paged to INVESTIGATE
+ * AND FIX the fatal (open a PR), with the configured human @mentioned in the
+ * prompt. This is the real prior art the platform already uses to ping the bot;
+ * the alarm never names the transport runtime — the channel id is config.
+ *
+ * Fallback path: if dispatch is unavailable or fails, post a plain notification
+ * via `datamachine/post-message-discord` so a human is still alerted.
+ *
+ * Degrades gracefully (returns false) when neither path is available.
  *
  * @param array  $alarm   One alarm row from the evaluator.
- * @param string $channel Discord channel id.
- * @return bool True when the beacon was sent successfully.
+ * @param string $channel Discord channel id (notification target / agent thread home).
+ * @return bool True when the alarm was delivered by either path.
  */
 function extrachill_analytics_send_fatal_alarm_beacon( $alarm, $channel ) {
-	if ( '' === $channel ) {
+	if ( ! function_exists( 'wp_get_ability' ) ) {
 		return false;
 	}
 
-	if ( ! function_exists( 'wp_get_ability' ) ) {
+	// Primary: dispatch a coding-agent session that fixes the fatal.
+	if ( extrachill_analytics_dispatch_fatal_alarm_agent( $alarm, $channel ) ) {
+		return true;
+	}
+
+	// Fallback: plain Discord notification (still @mentions the human).
+	if ( '' === $channel ) {
 		return false;
 	}
 
@@ -414,7 +518,7 @@ function extrachill_analytics_send_fatal_alarm_beacon( $alarm, $channel ) {
 		return false;
 	}
 
-	$content = extrachill_analytics_format_fatal_alarm_message( $alarm );
+	$content = extrachill_analytics_format_fatal_alarm_message( $alarm, true );
 
 	$response = $ability->execute(
 		array(
@@ -431,12 +535,75 @@ function extrachill_analytics_send_fatal_alarm_beacon( $alarm, $channel ) {
 }
 
 /**
- * Format the terse, actionable Discord message body for a fatal alarm.
+ * Spawn a coding-agent session to investigate and fix the fatal.
+ *
+ * Uses the canonical `agents/dispatch-message` ability (agents-api). The
+ * dispatch channel (a registered CLI runtime that opens an agent thread) and
+ * the recipient (the Discord channel the thread is homed in) are config; the
+ * prompt instructs the bot to fix the fatal and @mentions the configured human.
+ *
+ * @param array  $alarm   One alarm row from the evaluator.
+ * @param string $channel Discord channel id the agent thread should live in.
+ * @return bool True when the dispatch reported the session was sent.
+ */
+function extrachill_analytics_dispatch_fatal_alarm_agent( $alarm, $channel ) {
+	$dispatch_channel = extrachill_analytics_fatal_alarm_dispatch_channel();
+	if ( '' === $dispatch_channel || '' === $channel ) {
+		return false;
+	}
+
+	$ability = wp_get_ability( 'agents/dispatch-message' );
+	if ( null === $ability ) {
+		return false;
+	}
+
+	$prompt = extrachill_analytics_format_fatal_alarm_fix_prompt( $alarm );
+
+	$response = $ability->execute(
+		array(
+			'channel'   => $dispatch_channel,
+			'recipient' => $channel,
+			'message'   => $prompt,
+			'metadata'  => array(
+				'source'    => EXTRACHILL_ANALYTICS_FATAL_ALARM_DISPATCH_SOURCE,
+				'signature' => $alarm['signature'],
+			),
+		)
+	);
+
+	if ( is_wp_error( $response ) ) {
+		return false;
+	}
+
+	return is_array( $response ) && ! empty( $response['sent'] );
+}
+
+/**
+ * Build the Discord mention prefix for the configured human, or '' if none.
+ *
+ * @return string e.g. "<@123456789012345678> " or ''.
+ */
+function extrachill_analytics_fatal_alarm_mention_prefix() {
+	$mention = extrachill_analytics_fatal_alarm_mention();
+	if ( '' === $mention ) {
+		return '';
+	}
+
+	// Accept a bare id or an already-formatted mention; normalize to <@id>.
+	if ( ctype_digit( $mention ) ) {
+		return '<@' . $mention . '> ';
+	}
+
+	return $mention . ' ';
+}
+
+/**
+ * Map alarm reasons to human labels.
  *
  * @param array $alarm One alarm row from the evaluator.
- * @return string Message content.
+ * @return string Comma-joined reason labels.
  */
-function extrachill_analytics_format_fatal_alarm_message( $alarm ) {
+function extrachill_analytics_fatal_alarm_reason_text( $alarm ) {
 	$reason_labels = array(
 		'new_signature'        => 'NEW fatal signature',
 		'returned_after_quiet' => 'returned after going quiet',
@@ -449,7 +616,22 @@ function extrachill_analytics_format_fatal_alarm_message( $alarm ) {
 		$reasons[] = $reason_labels[ $reason ] ?? $reason;
 	}
 
-	$header = '🚨 **PHP fatal alarm** — ' . ( $reasons ? implode( ', ', $reasons ) : 'fatal detected' );
+	return $reasons ? implode( ', ', $reasons ) : 'fatal detected';
+}
+
+/**
+ * Format the terse, actionable Discord notification body for a fatal alarm.
+ *
+ * Used on the FALLBACK path (plain post). When $with_mention is true the
+ * configured human is @mentioned so the post actually pages someone.
+ *
+ * @param array $alarm        One alarm row from the evaluator.
+ * @param bool  $with_mention Prefix the configured human mention.
+ * @return string Message content.
+ */
+function extrachill_analytics_format_fatal_alarm_message( $alarm, $with_mention = false ) {
+	$prefix = $with_mention ? extrachill_analytics_fatal_alarm_mention_prefix() : '';
+	$header = $prefix . '🚨 **PHP fatal alarm** — ' . extrachill_analytics_fatal_alarm_reason_text( $alarm );
 
 	$lines = array(
 		$header,
@@ -473,4 +655,46 @@ function extrachill_analytics_format_fatal_alarm_message( $alarm ) {
 	}
 
 	return $message;
+}
+
+/**
+ * Build the agent-dispatch prompt instructing the bot to fix the fatal.
+ *
+ * This is the spawned coding-agent session's entire context, so it must be
+ * self-contained: it @mentions the configured human, states the incident, and
+ * tells the bot to investigate and open a PR (not release/deploy). The prompt
+ * deliberately mirrors the platform's minion-prompt conventions.
+ *
+ * @param array $alarm One alarm row from the evaluator.
+ * @return string Prompt body.
+ */
+function extrachill_analytics_format_fatal_alarm_fix_prompt( $alarm ) {
+	$mention = extrachill_analytics_fatal_alarm_mention_prefix();
+
+	$lines = array(
+		$mention . '🚨 **PHP fatal alarm — investigate and fix.**',
+		'',
+		'A PHP fatal is firing on the live network RIGHT NOW (' . extrachill_analytics_fatal_alarm_reason_text( $alarm ) . '). Investigate the root cause and open a PR with the fix.',
+		'',
+		'**Hard constraints:** PR only. Do NOT release, do NOT deploy, do NOT edit CHANGELOG.md, do NOT hand-bump versions. Work in a worktree, conventional commits, print the PR URL when done.',
+		'',
+		'**Fatal details (from the live debug.log tail):**',
+		'- Severity: ' . strtoupper( (string) $alarm['severity'] ),
+		'- Location: `' . $alarm['file'] . '`',
+		'- Signature: `' . $alarm['signature'] . '`',
+		'- Rate: ' . (int) $alarm['count'] . ' in the last window (~' . (int) $alarm['rate_per_hr'] . '/hr)',
+		'- First seen: ' . $alarm['first_seen'] . ' UTC · Last seen: ' . $alarm['last_seen'] . ' UTC',
+		'- Sample: `' . substr( (string) $alarm['sample'], 0, 240 ) . '`',
+		'',
+		'**Start here:** `wp extrachill analytics errors --since=1h --severity=fatal` to confirm it is still firing, then `grep` the location above in the read-only plugin/theme tree to find the owning repo, reproduce the cause, and fix it in a worktree. If it has already stopped firing by the time you look, say so and stop — do not invent a fix.',
+	);
+
+	$prompt = implode( "\n", $lines );
+
+	// Keep the spawned prompt well under transport limits.
+	if ( strlen( $prompt ) > 1800 ) {
+		$prompt = substr( $prompt, 0, 1797 ) . '...';
+	}
+
+	return $prompt;
 }
