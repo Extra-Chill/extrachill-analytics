@@ -80,14 +80,22 @@ function extrachill_analytics_revenue_parse_number( $value ) {
 /**
  * Import a Mediavine Pages CSV into the revenue store.
  *
+ * Time-awareness: the flat Mediavine pages export has NO date column — it is one
+ * cumulative LIFETIME total per URL. So the operator supplies the period at
+ * import time. Pass `period` ("YYYY-MM" for a monthly export, "YYYY" for a year,
+ * or '' for the flat lifetime file) and it becomes the canonical period_label
+ * the revenue ARC groups by; without it, rows land in the "all-time" bucket.
+ * Explicit period_start/period_end override the derived date range.
+ *
  * @param string $file  Absolute path to the CSV.
  * @param array  $args {
  *     Import options.
  *
  *     @type int    $blog_id      Blog the pages belong to (default: current blog).
  *     @type string $hostname     Hostname for slug->post resolution (default: extrachill.com).
- *     @type string $period_start Window start (Y-m-d) for these snapshots, or '' (default: '').
- *     @type string $period_end   Window end (Y-m-d) for these snapshots, or '' (default: '').
+ *     @type string $period       Period token: "YYYY-MM", "YYYY", or '' (lifetime). Default ''.
+ *     @type string $period_start Explicit window start (Y-m-d) override, or '' (default: '').
+ *     @type string $period_end   Explicit window end (Y-m-d) override, or '' (default: '').
  *     @type string $import_batch Batch label (default: auto from filename + timestamp).
  *     @type bool   $dry_run      Parse + resolve but do not write (default: false).
  * }
@@ -100,19 +108,29 @@ function extrachill_analytics_revenue_parse_number( $value ) {
  *     @type int    $resolved   Rows whose slug resolved to a post.
  *     @type int    $unresolved Rows that did not resolve to a post.
  *     @type string $batch      Import batch label used.
+ *     @type string $period     Resolved period_label the rows were stamped with.
  *     @type array  $samples    First few resolved rows (slug, post_id, revenue).
  *     @type string $error      Error message on failure.
  * }
  */
 function extrachill_analytics_revenue_import_csv( $file, array $args = array() ) {
-	$blog_id      = isset( $args['blog_id'] ) ? (int) $args['blog_id'] : get_current_blog_id();
-	$hostname     = ! empty( $args['hostname'] ) ? (string) $args['hostname'] : 'extrachill.com';
-	$period_start = isset( $args['period_start'] ) ? (string) $args['period_start'] : '';
-	$period_end   = isset( $args['period_end'] ) ? (string) $args['period_end'] : '';
-	$dry_run      = ! empty( $args['dry_run'] );
-	$batch        = ! empty( $args['import_batch'] )
+	$blog_id  = isset( $args['blog_id'] ) ? (int) $args['blog_id'] : get_current_blog_id();
+	$hostname = ! empty( $args['hostname'] ) ? (string) $args['hostname'] : 'extrachill.com';
+	$dry_run  = ! empty( $args['dry_run'] );
+
+	// Resolve the operator-supplied period token into a canonical label + range.
+	$resolved     = extrachill_analytics_revenue_resolve_period(
+		isset( $args['period'] ) ? (string) $args['period'] : '',
+		isset( $args['period_start'] ) ? (string) $args['period_start'] : '',
+		isset( $args['period_end'] ) ? (string) $args['period_end'] : ''
+	);
+	$period_label = $resolved['label'];
+	$period_start = $resolved['start'];
+	$period_end   = $resolved['end'];
+
+	$batch = ! empty( $args['import_batch'] )
 		? (string) $args['import_batch']
-		: sanitize_key( basename( $file ) ) . '-' . gmdate( 'YmdHis' );
+		: sanitize_key( basename( $file ) ) . '-' . sanitize_key( $period_label );
 
 	if ( ! is_readable( $file ) ) {
 		return array(
@@ -208,6 +226,7 @@ function extrachill_analytics_revenue_import_csv( $file, array $args = array() )
 			'viewability'              => extrachill_analytics_revenue_parse_number( $cell( $line, $columns, 'viewability' ) ),
 			'fill_rate'                => extrachill_analytics_revenue_parse_number( $cell( $line, $columns, 'fill_rate' ) ),
 			'impressions_per_pageview' => extrachill_analytics_revenue_parse_number( $cell( $line, $columns, 'impressions_per_pageview' ) ),
+			'period_label'             => $period_label,
 			'period_start'             => $period_start,
 			'period_end'               => $period_end,
 			'import_batch'             => $batch,
@@ -239,6 +258,7 @@ function extrachill_analytics_revenue_import_csv( $file, array $args = array() )
 		'resolved'   => $resolved,
 		'unresolved' => $unresolved,
 		'batch'      => $batch,
+		'period'     => $period_label,
 		'dry_run'    => $dry_run,
 		'samples'    => $samples,
 	);
