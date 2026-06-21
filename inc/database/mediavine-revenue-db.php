@@ -50,6 +50,13 @@ function extrachill_analytics_revenue_create_table() {
 	// Mediavine export has NO date column, so the operator supplies the period at
 	// import time (--period=YYYY-MM) and it is recorded here. The unique key makes
 	// a re-import of the same period idempotent (REPLACE INTO updates in place).
+	//
+	// post_id, period_start and period_end are genuinely NULLABLE: an unresolved
+	// (legacy .html) row stores post_id = NULL, and the flat lifetime file (no
+	// dates) stores period_start/end = NULL. The upsert writer emits a literal SQL
+	// NULL for these rather than letting $wpdb->prepare() coerce a PHP null into 0
+	// / "" / "0000-00-00", so the schema's DEFAULT NULL is honored and the table
+	// behaves identically on strict-mode MySQL.
 	$sql = "CREATE TABLE {$table_name} (
 		id bigint(20) unsigned NOT NULL AUTO_INCREMENT,
 		blog_id int(11) NOT NULL DEFAULT 1,
@@ -127,34 +134,58 @@ function extrachill_analytics_revenue_upsert( array $row ) {
 
 	$table = extrachill_analytics_revenue_table();
 
-	$data = array(
-		'blog_id'                  => isset( $row['blog_id'] ) ? (int) $row['blog_id'] : get_current_blog_id(),
-		'slug'                     => isset( $row['slug'] ) ? (string) $row['slug'] : '',
-		'url'                      => isset( $row['url'] ) ? (string) $row['url'] : '',
-		'post_id'                  => ! empty( $row['post_id'] ) ? (int) $row['post_id'] : null,
-		'views'                    => isset( $row['views'] ) ? max( 0, (int) $row['views'] ) : 0,
-		'revenue'                  => isset( $row['revenue'] ) ? (float) $row['revenue'] : 0.0,
-		'rpm'                      => isset( $row['rpm'] ) ? (float) $row['rpm'] : 0.0,
-		'cpm'                      => isset( $row['cpm'] ) ? (float) $row['cpm'] : 0.0,
-		'viewability'              => isset( $row['viewability'] ) ? (float) $row['viewability'] : 0.0,
-		'fill_rate'                => isset( $row['fill_rate'] ) ? (float) $row['fill_rate'] : 0.0,
-		'impressions_per_pageview' => isset( $row['impressions_per_pageview'] ) ? (float) $row['impressions_per_pageview'] : 0.0,
-		'period_label'             => ! empty( $row['period_label'] ) ? (string) $row['period_label'] : 'all-time',
-		'period_start'             => ! empty( $row['period_start'] ) ? $row['period_start'] : null,
-		'period_end'               => ! empty( $row['period_end'] ) ? $row['period_end'] : null,
-		'import_batch'             => isset( $row['import_batch'] ) ? (string) $row['import_batch'] : '',
-		'imported_at'              => current_time( 'mysql', true ),
+	// Nullable columns (post_id, period_start, period_end) MUST store a real SQL
+	// NULL when absent, never a coerced 0 / "" / "0000-00-00". $wpdb->prepare()
+	// turns a PHP null into 0 for %d and "" for %s (which a DATE column then
+	// stores as the 0000-00-00 zero-date on non-strict MySQL, and ERRORS on a
+	// strict-mode install). That coercion is what corrupts the unresolved
+	// (legacy .html) cohort: COUNT(DISTINCT IFNULL(post_id, slug)) needs post_id
+	// to be NULL to fall back to the slug, so a stored 0 collapses every
+	// unresolved page in a bucket into one. So we emit those columns as a literal
+	// NULL in the SQL and bind only the non-null values through prepare().
+	$post_id      = ! empty( $row['post_id'] ) ? (int) $row['post_id'] : null;
+	$period_start = ! empty( $row['period_start'] ) ? (string) $row['period_start'] : null;
+	$period_end   = ! empty( $row['period_end'] ) ? (string) $row['period_end'] : null;
+
+	// Ordered (column, placeholder-or-NULL, bind-value?) tuples. A null third
+	// element means the column binds nothing — its placeholder is the literal
+	// NULL — so prepare() never sees the value and can't coerce it.
+	$fields = array(
+		array( 'blog_id', '%d', isset( $row['blog_id'] ) ? (int) $row['blog_id'] : get_current_blog_id() ),
+		array( 'slug', '%s', isset( $row['slug'] ) ? (string) $row['slug'] : '' ),
+		array( 'url', '%s', isset( $row['url'] ) ? (string) $row['url'] : '' ),
+		array( 'post_id', null === $post_id ? 'NULL' : '%d', $post_id ),
+		array( 'views', '%d', isset( $row['views'] ) ? max( 0, (int) $row['views'] ) : 0 ),
+		array( 'revenue', '%f', isset( $row['revenue'] ) ? (float) $row['revenue'] : 0.0 ),
+		array( 'rpm', '%f', isset( $row['rpm'] ) ? (float) $row['rpm'] : 0.0 ),
+		array( 'cpm', '%f', isset( $row['cpm'] ) ? (float) $row['cpm'] : 0.0 ),
+		array( 'viewability', '%f', isset( $row['viewability'] ) ? (float) $row['viewability'] : 0.0 ),
+		array( 'fill_rate', '%f', isset( $row['fill_rate'] ) ? (float) $row['fill_rate'] : 0.0 ),
+		array( 'impressions_per_pageview', '%f', isset( $row['impressions_per_pageview'] ) ? (float) $row['impressions_per_pageview'] : 0.0 ),
+		array( 'period_label', '%s', ! empty( $row['period_label'] ) ? (string) $row['period_label'] : 'all-time' ),
+		array( 'period_start', null === $period_start ? 'NULL' : '%s', $period_start ),
+		array( 'period_end', null === $period_end ? 'NULL' : '%s', $period_end ),
+		array( 'import_batch', '%s', isset( $row['import_batch'] ) ? (string) $row['import_batch'] : '' ),
+		array( 'imported_at', '%s', current_time( 'mysql', true ) ),
 	);
 
-	$formats = array( '%d', '%s', '%s', '%d', '%d', '%f', '%f', '%f', '%f', '%f', '%f', '%s', '%s', '%s', '%s', '%s' );
+	$columns      = array();
+	$placeholders = array();
+	$values       = array();
+	foreach ( $fields as $field ) {
+		list( $column, $placeholder, $value ) = $field;
+		$columns[]                            = $column;
+		$placeholders[]                       = $placeholder;
+		if ( 'NULL' !== $placeholder ) {
+			$values[] = $value;
+		}
+	}
 
 	// REPLACE INTO honors the UNIQUE KEY: same snapshot overwrites in place.
-	$columns      = implode( ', ', array_keys( $data ) );
-	$placeholders = implode( ', ', $formats );
-	$sql          = "REPLACE INTO {$table} ({$columns}) VALUES ({$placeholders})";
+	$sql = 'REPLACE INTO ' . $table . ' (' . implode( ', ', $columns ) . ') VALUES (' . implode( ', ', $placeholders ) . ')';
 
 	// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared -- columns/placeholders are static; values prepared below.
-	$prepared = $wpdb->prepare( $sql, array_values( $data ) );
+	$prepared = $wpdb->prepare( $sql, $values );
 	$result   = $wpdb->query( $prepared ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
 
 	return false === $result ? false : (int) $wpdb->insert_id;
@@ -277,15 +308,24 @@ function extrachill_analytics_revenue_get_timeseries( array $args = array() ) {
 
 	$where_clause = implode( ' AND ', $where );
 
+	// Distinct-page count must be storage-agnostic: a resolved row is keyed by
+	// its post_id, an unresolved (legacy .html) row by its slug. We mirror the
+	// PHP join in get-content-revenue.php ($page_key = post_id>0 ? "p".post_id :
+	// "u".slug) in SQL with a CASE — NOT IFNULL(post_id, slug), which silently
+	// collapses every unresolved page to one bucket if any row ever stored
+	// post_id as 0 instead of NULL (the exact bug that under-counted the 963
+	// legacy .html ghost pages). post_id is now stored as a true NULL, but the
+	// CASE is correct regardless of how it was stored.
+	//
 	// Order chronologically left-to-right. The cumulative "all-time" flat-file
-	// bucket has no real period_start (stored as the 0000-00-00 zero-date, since
-	// the column is a NOT-NULL date), so it must sort LAST — it is a lifetime
-	// total, not a point on the arc. Both the explicit all-time label and any
-	// zero-date are pushed to the end.
+	// bucket has no period_start (stored as a true NULL — the flat lifetime
+	// export carries no dates), so it must sort LAST: it is a lifetime total, not
+	// a point on the arc. The explicit all-time label and any NULL/zero-date are
+	// pushed to the end (zero-date guard kept for any legacy pre-fix rows).
 	$sql = "SELECT period_label,
 			MIN(period_start) AS period_start,
 			MAX(period_end) AS period_end,
-			COUNT(DISTINCT IFNULL(post_id, slug)) AS pages,
+			COUNT(DISTINCT CASE WHEN post_id > 0 THEN CONCAT('p', post_id) ELSE CONCAT('u', slug) END) AS pages,
 			SUM(views) AS views,
 			SUM(revenue) AS revenue
 		FROM {$table}

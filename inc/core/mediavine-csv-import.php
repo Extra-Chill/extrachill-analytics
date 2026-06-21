@@ -91,7 +91,9 @@ function extrachill_analytics_revenue_parse_number( $value ) {
  * @param array  $args {
  *     Import options.
  *
- *     @type int    $blog_id      Blog the pages belong to (default: current blog).
+ *     @type int    $blog_id      Blog the pages belong to (default: current blog). Slug->post
+ *                                resolution runs against this blog (switch_to_blog) so the stamped
+ *                                blog_id and resolved post_id agree on a multisite.
  *     @type string $hostname     Hostname for slug->post resolution (default: extrachill.com).
  *     @type string $period       Period token: "YYYY-MM", "YYYY", or '' (lifetime). Default ''.
  *     @type string $period_start Explicit window start (Y-m-d) override, or '' (default: '').
@@ -180,6 +182,19 @@ function extrachill_analytics_revenue_import_csv( $file, array $args = array() )
 	$unresolved = 0;
 	$samples    = array();
 
+	// Slug->post resolution (url_to_postid) always runs against the CURRENT blog,
+	// but rows are stamped with $blog_id. On a multisite, importing for a blog
+	// other than the current one would resolve every slug against the wrong post
+	// table. Switch into the target blog for the duration of resolution so the
+	// stamped blog_id and the resolved post_id always agree. Revenue is blog 1 and
+	// the CLI runs there, so this is normally a no-op, but it makes a cross-blog
+	// import correct instead of a latent footgun.
+	$switched = false;
+	if ( $blog_id > 0 && function_exists( 'switch_to_blog' ) && get_current_blog_id() !== $blog_id ) {
+		switch_to_blog( $blog_id );
+		$switched = true;
+	}
+
 	$cell = static function ( $line, $columns, $field ) {
 		if ( ! isset( $columns[ $field ] ) ) {
 			return '';
@@ -250,6 +265,10 @@ function extrachill_analytics_revenue_import_csv( $file, array $args = array() )
 	}
 
 	fclose( $handle ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_read_fclose -- paired with the streaming fopen above.
+
+	if ( $switched ) {
+		restore_current_blog();
+	}
 
 	return array(
 		'success'    => true,
