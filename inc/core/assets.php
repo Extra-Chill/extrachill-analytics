@@ -126,8 +126,11 @@ function extrachill_analytics_get_or_mint_visitor_id() {
 	// Set the cookie for ~1 year. Secure + HttpOnly + SameSite=Lax: first-party
 	// analytics only, not readable by JS, not sent on cross-site sub-requests.
 	// Guarded against headers_sent() as defense-in-depth; the early
-	// template_redirect hook below is what actually makes this succeed.
-	if ( ! headers_sent() ) {
+	// template_redirect hook below is what actually makes this succeed. The
+	// non-empty $cookie_name guard is belt-and-suspenders: an empty name throws
+	// an uncaught ValueError on PHP 8 (setcookie() rejects an empty $name), so
+	// we never call setcookie() unless we have a real cookie name to set.
+	if ( '' !== $cookie_name && ! headers_sent() ) {
 		setcookie(
 			$cookie_name,
 			$visitor_id,
