@@ -28,6 +28,7 @@ add_action( 'wp_abilities_api_init', 'extrachill_analytics_register_outbound_cli
 add_action( 'wp_abilities_api_init', 'extrachill_analytics_register_retention_stats_ability' );
 add_action( 'wp_abilities_api_init', 'extrachill_analytics_register_surface_growth_ability' );
 add_action( 'wp_abilities_api_init', 'extrachill_analytics_register_conversion_map_ability' );
+add_action( 'wp_abilities_api_init', 'extrachill_analytics_register_crosslink_targets_ability' );
 add_action( 'wp_abilities_api_init', 'extrachill_analytics_register_surface_stickiness_ability' );
 add_action( 'wp_abilities_api_init', 'extrachill_analytics_register_activation_funnel_ability' );
 add_action( 'wp_abilities_api_init', 'extrachill_analytics_register_content_revenue_ability' );
