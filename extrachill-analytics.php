@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Extra Chill Analytics
  * Description: Network-wide analytics tracking and reporting for the Extra Chill Platform.
- * Version: 0.27.2
+ * Version: 0.27.3
  * Author: Chris Huber
  * Network: true
  * Text Domain: extrachill-analytics
@@ -15,7 +15,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-define( 'EXTRACHILL_ANALYTICS_VERSION', '0.27.2' );
+define( 'EXTRACHILL_ANALYTICS_VERSION', '0.27.3' );
 define( 'EXTRACHILL_ANALYTICS_PLUGIN_DIR', plugin_dir_path( __FILE__ ) );
 define( 'EXTRACHILL_ANALYTICS_PLUGIN_URL', plugin_dir_url( __FILE__ ) );
 
@@ -23,6 +23,7 @@ define( 'EXTRACHILL_ANALYTICS_PLUGIN_URL', plugin_dir_url( __FILE__ ) );
 require_once EXTRACHILL_ANALYTICS_PLUGIN_DIR . 'inc/database/events-db.php';
 require_once EXTRACHILL_ANALYTICS_PLUGIN_DIR . 'inc/database/php-error-log-db.php';
 require_once EXTRACHILL_ANALYTICS_PLUGIN_DIR . 'inc/database/mediavine-revenue-db.php';
+require_once EXTRACHILL_ANALYTICS_PLUGIN_DIR . 'inc/database/class-extrachill-analytics-revenue-store.php';
 require_once EXTRACHILL_ANALYTICS_PLUGIN_DIR . 'inc/database/link-page-analytics-db.php';
 
 // Core functionality (network-wide).
@@ -67,6 +68,7 @@ require_once EXTRACHILL_ANALYTICS_PLUGIN_DIR . 'inc/core/abilities/get-activatio
 require_once EXTRACHILL_ANALYTICS_PLUGIN_DIR . 'inc/core/abilities/get-content-revenue.php';
 require_once EXTRACHILL_ANALYTICS_PLUGIN_DIR . 'inc/core/abilities/get-content-revenue-pages.php';
 require_once EXTRACHILL_ANALYTICS_PLUGIN_DIR . 'inc/core/abilities/get-content-revenue-diagnostics.php';
+require_once EXTRACHILL_ANALYTICS_PLUGIN_DIR . 'inc/core/abilities/ingest-revenue.php';
 require_once EXTRACHILL_ANALYTICS_PLUGIN_DIR . 'inc/core/abilities/get-bot-filter-impact.php';
 require_once EXTRACHILL_ANALYTICS_PLUGIN_DIR . 'inc/core/abilities/get-php-error-summary.php';
 require_once EXTRACHILL_ANALYTICS_PLUGIN_DIR . 'inc/core/abilities/check-fatal-alarm.php';

@@ -35,6 +35,7 @@ add_action( 'wp_abilities_api_init', 'extrachill_analytics_register_activation_f
 add_action( 'wp_abilities_api_init', 'extrachill_analytics_register_content_revenue_ability' );
 add_action( 'wp_abilities_api_init', 'extrachill_analytics_register_content_revenue_pages_ability' );
 add_action( 'wp_abilities_api_init', 'extrachill_analytics_register_content_revenue_diagnostics_ability' );
+add_action( 'wp_abilities_api_init', 'extrachill_analytics_register_ingest_revenue_ability' );
 add_action( 'wp_abilities_api_init', 'extrachill_analytics_register_bot_filter_impact_ability' );
 
 /**
