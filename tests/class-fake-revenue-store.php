@@ -3,8 +3,8 @@
  * In-memory revenue store for the ingestion ability tests.
  *
  * Mirrors the production store contract: get_snapshot / upsert (REPLACE on the
- * unique key) / delete_ids / count_period_other_batches / adopt_period /
- * begin / commit / rollback / lock / unlock. upsert assigns stable ids;
+ * unique key) / delete_ids / begin / commit / rollback / lock / unlock. upsert
+ * assigns stable ids;
  * transactions capture a restorable snapshot so rollback behavior is testable;
  * failure flags (fail_begin / fail_commit / fail_lock / fail_upsert_after) let
  * tests exercise fail-closed paths. Used by IngestRevenueTest because this
@@ -160,44 +160,6 @@ final class Fake_Revenue_Store {
 	}
 
 	/**
-	 * Count rows for a period that belong to a DIFFERENT batch (adoption preview).
-	 *
-	 * @param int    $blog_id      Blog ID.
-	 * @param string $period_label Period label.
-	 * @param string $import_batch Canonical batch to exclude.
-	 * @return int
-	 */
-	public function count_period_other_batches( $blog_id, $period_label, $import_batch ) {
-		$count = 0;
-		foreach ( $this->rows as $r ) {
-			if ( (int) $r['blog_id'] === (int) $blog_id && (string) $r['period_label'] === (string) $period_label && (string) $r['import_batch'] !== (string) $import_batch ) {
-				++$count;
-			}
-		}
-		return $count;
-	}
-
-	/**
-	 * Adopt a period: delete every row whose batch is not the canonical one.
-	 *
-	 * @param int    $blog_id      Blog ID.
-	 * @param string $period_label Period label.
-	 * @param string $import_batch Canonical batch to keep.
-	 * @return int Rows deleted.
-	 */
-	public function adopt_period( $blog_id, $period_label, $import_batch ) {
-		$removed = 0;
-		foreach ( $this->rows as $i => $r ) {
-			if ( (int) $r['blog_id'] === (int) $blog_id && (string) $r['period_label'] === (string) $period_label && (string) $r['import_batch'] !== (string) $import_batch ) {
-				unset( $this->rows[ $i ] );
-				++$removed;
-			}
-		}
-		$this->rows = array_values( $this->rows );
-		return $removed;
-	}
-
-	/**
 	 * Acquire an advisory lock (single-threaded fake: always succeeds unless flagged).
 	 *
 	 * @param string $name    Lock name.
@@ -317,7 +279,7 @@ final class Fake_Revenue_Store {
 
 	/**
 	 * Sum views + revenue across ALL batches for a (blog, period) — mirrors the
-	 * ARC's period-level SUM, so tests can prove adoption prevents doubling.
+	 * ARC's period-level SUM, so tests can assert snapshot isolation behavior.
 	 *
 	 * @param int    $blog_id      Blog ID.
 	 * @param string $period_label Period label.

@@ -509,15 +509,15 @@ final class IngestRevenueTest extends TestCase {
 	}
 
 	/**
-	 * The first replace adopts a legacy batch so period totals cannot double.
+	 * Replace never mutates a legacy batch; cleanup is an explicit operator action.
 	 */
-	public function test_replace_adopts_legacy_batch_without_double_counting(): void {
+	public function test_replace_preserves_legacy_batch(): void {
 		$this->store->rows[] = array(
 			'id'           => 99,
 			'blog_id'      => 1,
 			'slug'         => 'a',
 			'period_label' => '2026-05',
-			'import_batch' => 'mediavine-pages-random-csv',
+			'import_batch' => 'mediavine-revenue-a1b2c3tmp-2026-05',
 			'views'        => 1000,
 			'revenue'      => 100.0,
 		);
@@ -533,14 +533,73 @@ final class IngestRevenueTest extends TestCase {
 		);
 
 		$this->assertTrue( $result['success'] );
-		$this->assertSame( 1, $result['adopted'] );
+		$this->assertCount( 1, $this->store->snapshot_records( 1, '2026-05', 'mediavine-revenue-a1b2c3tmp-2026-05' ) );
 		$this->assertSame(
 			array(
-				'views'   => 2000,
-				'revenue' => 200.0,
+				'views'   => 3000,
+				'revenue' => 300.0,
 			),
 			$this->store->period_totals( 1, '2026-05' )
 		);
+	}
+
+	/**
+	 * A deliberate additive snapshot must survive a later canonical replace.
+	 */
+	public function test_additive_snapshot_survives_later_replace(): void {
+		$this->ingest( $this->rows( array( 'a' => 100.0 ) ), array( 'period' => '2026-05' ) );
+		$this->ingest(
+			$this->rows( array( 'a' => 25.0 ) ),
+			array(
+				'period'   => '2026-05',
+				'mode'     => 'additive',
+				'snapshot' => 'manual-recheck-2026-05',
+			)
+		);
+
+		$result = $this->ingest( $this->rows( array( 'a' => 150.0 ) ), array( 'period' => '2026-05' ) );
+
+		$this->assertTrue( $result['success'] );
+		$this->assertCount( 1, $this->store->snapshot_records( 1, '2026-05', 'manual-recheck-2026-05' ) );
+	}
+
+	/**
+	 * A deterministic snapshot from another revenue source is never legacy data.
+	 */
+	public function test_alternate_source_canonical_snapshot_survives_replace(): void {
+		$alternate = $this->ingest(
+			$this->rows( array( 'a' => 25.0 ) ),
+			array(
+				'period'      => '2026-05',
+				'source'      => 'adthrive',
+				'source_site' => 'wire.extrachill.com',
+			)
+		);
+
+		$result = $this->ingest( $this->rows( array( 'a' => 150.0 ) ), array( 'period' => '2026-05' ) );
+
+		$this->assertTrue( $result['success'] );
+		$this->assertCount( 1, $this->store->snapshot_records( 1, '2026-05', $alternate['identity']['import_batch'] ) );
+	}
+
+	/**
+	 * A non-temp manual batch survives replacement even when it shares a period.
+	 */
+	public function test_unrelated_manual_batch_survives_replace(): void {
+		$this->store->rows[] = array(
+			'id'           => 99,
+			'blog_id'      => 1,
+			'slug'         => 'a',
+			'period_label' => '2026-05',
+			'import_batch' => 'operator-audit-2026-05',
+			'views'        => 1000,
+			'revenue'      => 100.0,
+		);
+
+		$result = $this->ingest( $this->rows( array( 'a' => 150.0 ) ), array( 'period' => '2026-05' ) );
+
+		$this->assertTrue( $result['success'] );
+		$this->assertCount( 1, $this->store->snapshot_records( 1, '2026-05', 'operator-audit-2026-05' ) );
 	}
 
 	/**

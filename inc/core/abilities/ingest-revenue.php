@@ -35,13 +35,13 @@
  * REPLACEMENT vs ADDITIVE:
  * - `replace` (default): REQUIRES non-empty rows (an empty/omitted set can never
  *   wipe an existing snapshot). It upserts incoming rows into the deterministic
- *   snapshot, removes stale rows that disappeared from the refreshed source, AND
- *   ADOPTS the period — sweeping any OTHER batch for the same (blog, period) so
- *   a legacy filename-derived batch left over from the old importer flow cannot
- *   double the ARC on the first ability ingestion. The whole mutation runs in a
- *   transaction (where supported) under a per-period advisory lock so two
- *   concurrent refreshes cannot union snapshots.
- * - `additive`: NEVER deletes or adopts, and REQUIRES an explicit operator-
+ *   snapshot and removes stale rows that disappeared from that exact snapshot.
+ *   It never discovers, adopts, or deletes another batch. Existing legacy
+ *   batches require an explicit one-time operator migration or purge outside
+ *   this runtime ability. The whole mutation runs in a transaction (where
+ *   supported) under a per-period advisory lock so concurrent refreshes cannot
+ *   union one snapshot.
+ * - `additive`: NEVER deletes, and REQUIRES an explicit operator-
  *   supplied `snapshot` identity (a distinct parallel batch) that must NOT
  *   collide with the deterministic replace identity. This is the only way to
  *   land a second snapshot for the same period on purpose; it needs network-
@@ -306,9 +306,8 @@ function extrachill_analytics_revenue_ingest_authorize( $blog_id, $mode ) {
  * - `rows` is required and non-empty; an empty/omitted set is rejected and
  *   NEVER wipes an existing snapshot.
  * - Replace establishes ONE canonical snapshot per (blog, period): it upserts
- *   incoming rows, removes stale within-batch rows, and ADOPTS the period
- *   (sweeps any other batch for that period) so a legacy filename-derived batch
- *   cannot double the ARC.
+ *   incoming rows and removes stale rows only within that exact batch. Legacy
+ *   batch cleanup is an explicit one-time operator action outside this ability.
  * - The whole mutation runs in a transaction under a per-period advisory lock,
  *   begun BEFORE the snapshot read, so concurrent refreshes cannot union
  *   snapshots. Transaction begin/commit failures FAIL CLOSED.
@@ -549,14 +548,11 @@ function extrachill_analytics_revenue_ingest_rows( array $input_rows, array $arg
 		$store = new Extrachill_Analytics_Revenue_Store();
 	}
 
-	// Dry run: read the snapshot + count adoption candidates, plan, and report
-	// — mutate nothing. No lock is needed because nothing is written.
+	// Dry run: read exactly this snapshot, plan, and report — mutate nothing.
+	// No lock is needed because nothing is written.
 	if ( $dry_run ) {
 		$existing = $store->get_snapshot( $blog_id, $period_label, $batch );
 		$plan     = extrachill_analytics_revenue_build_ingestion_plan( $records, $existing, $mode );
-		$other    = ( 'replace' === $mode )
-			? $store->count_period_other_batches( $blog_id, $period_label, $batch )
-			: 0;
 
 		return array_merge(
 			array(
@@ -566,8 +562,6 @@ function extrachill_analytics_revenue_ingest_rows( array $input_rows, array $arg
 				'replaced'     => count( $plan['replaces'] ),
 				'deleted'      => 0,
 				'would_delete' => count( $plan['deletes'] ),
-				'adopted'      => 0,
-				'would_adopt'  => $other,
 			),
 			$base
 		);
@@ -603,7 +597,6 @@ function extrachill_analytics_revenue_ingest_rows( array $input_rows, array $arg
 	}
 
 	$op_error       = null;
-	$adopted        = 0;
 	$deletes_count  = 0;
 	$inserts_count  = 0;
 	$replaces_count = 0;
@@ -633,15 +626,6 @@ function extrachill_analytics_revenue_ingest_rows( array $input_rows, array $arg
 		if ( null === $op_error && ! empty( $plan['deletes'] ) ) {
 			if ( false === $store->delete_ids( $plan['deletes'] ) ) {
 				$op_error = 'Failed to remove stale revenue rows.';
-			}
-		}
-		// Adopt the period: replace establishes ONE canonical snapshot per
-		// (blog, period), sweeping any other batch (legacy filename-derived or
-		// stray) so the ARC cannot double-count on the first ability ingestion.
-		if ( null === $op_error && 'replace' === $mode ) {
-			$adopted = $store->adopt_period( $blog_id, $period_label, $batch );
-			if ( false === $adopted ) {
-				$op_error = 'Failed to adopt the canonical period snapshot.';
 			}
 		}
 		if ( null === $op_error && false === $store->commit() ) {
@@ -680,7 +664,6 @@ function extrachill_analytics_revenue_ingest_rows( array $input_rows, array $arg
 			'inserted' => $inserts_count,
 			'replaced' => $replaces_count,
 			'deleted'  => $deletes_count,
-			'adopted'  => (int) $adopted,
 		),
 		$base
 	);
@@ -698,7 +681,7 @@ function extrachill_analytics_register_ingest_revenue_ability() {
 		'extrachill/ingest-revenue',
 		array(
 			'label'               => __( 'Ingest Revenue Snapshot', 'extrachill-analytics' ),
-			'description'         => __( 'Idempotently ingest a set of per-URL ad-revenue rows (e.g. a Mediavine period export) into the revenue store with a deterministic snapshot identity. Default mode is deterministic REPLACE: the same source/site/blog/period always lands on the SAME snapshot, updating rows in place, removing any that disappeared from the refreshed source, and ADOPTING the period (sweeping legacy batches) so the ARC never double-counts. REQUIRES non-empty rows — an empty/omitted set never wipes a snapshot. ADDITIVE mode never deletes/adopts and requires an explicit, non-colliding snapshot identity plus network-level authorization. Replace authorizes against the TARGET blog (or network). The whole mutation runs in a transaction under a per-period advisory lock; begin/commit failures fail closed. Accepts normalized revenue rows plus source provenance; agnostic about the upstream source ability. Supports dry-run. Owned by analytics: validation, period/snapshot identity, replacement, adoption, resolution, and persistence all live here.', 'extrachill-analytics' ),
+			'description'         => __( 'Idempotently ingest a set of per-URL ad-revenue rows (e.g. a Mediavine period export) into the revenue store with a deterministic snapshot identity. Default mode is deterministic REPLACE: the same source/site/blog/period always lands on the SAME snapshot, updating rows in place and removing only rows that disappeared from that exact snapshot. It never discovers, adopts, or deletes another batch; existing legacy batches require an explicit one-time operator migration or purge outside this runtime ability. REQUIRES non-empty rows — an empty/omitted set never wipes a snapshot. ADDITIVE mode never deletes and requires an explicit, non-colliding snapshot identity plus network-level authorization. Replace authorizes against the TARGET blog (or network). The whole mutation runs in a transaction under a per-period advisory lock; begin/commit failures fail closed. Accepts normalized revenue rows plus source provenance; agnostic about the upstream source ability. Supports dry-run. Owned by analytics: validation, period/snapshot identity, replacement, resolution, and persistence all live here.', 'extrachill-analytics' ),
 			'category'            => 'extrachill-analytics',
 			'input_schema'        => array(
 				'type'       => 'object',
@@ -774,7 +757,7 @@ function extrachill_analytics_register_ingest_revenue_ability() {
 					),
 					'mode'         => array(
 						'type'        => 'string',
-						'description' => __( '"replace" (default) updates the deterministic snapshot in place, removes stale rows, and adopts the period; "additive" never deletes/adopts and requires an explicit snapshot identity plus network-level authorization. Additive cannot happen by accident.', 'extrachill-analytics' ),
+						'description' => __( '"replace" (default) updates only the deterministic snapshot in place and removes stale rows only from that snapshot; "additive" never deletes and requires an explicit snapshot identity plus network-level authorization. Existing legacy batches require an explicit operator migration or purge outside this ability.', 'extrachill-analytics' ),
 						'default'     => 'replace',
 						'enum'        => array( 'replace', 'additive' ),
 					),
@@ -787,7 +770,7 @@ function extrachill_analytics_register_ingest_revenue_ability() {
 					),
 					'dry_run'      => array(
 						'type'        => 'boolean',
-						'description' => __( 'If true, resolve + plan but write nothing. Reported counts reflect what would happen (would_delete, would_adopt).', 'extrachill-analytics' ),
+						'description' => __( 'If true, resolve + plan but write nothing. Reported counts reflect what would happen within the exact target snapshot.', 'extrachill-analytics' ),
 						'default'     => false,
 					),
 				),
@@ -795,7 +778,7 @@ function extrachill_analytics_register_ingest_revenue_ability() {
 			),
 			'output_schema'       => array(
 				'type'        => 'object',
-				'description' => __( 'Result with success, written, mode, dry_run, counts (rows, input_rows, duplicate_rows_deduped, resolved, unresolved, inserted, replaced, deleted, adopted, and would_delete/would_adopt on dry run), and the stable identity (import_batch, period_label, period_start/end, source, source_site, blog_id). On failure: success=false, written=false, error.', 'extrachill-analytics' ),
+				'description' => __( 'Result with success, written, mode, dry_run, counts (rows, input_rows, duplicate_rows_deduped, resolved, unresolved, inserted, replaced, deleted, and would_delete on dry run), and the stable identity (import_batch, period_label, period_start/end, source, source_site, blog_id). On failure: success=false, written=false, error.', 'extrachill-analytics' ),
 				'properties'  => array(
 					'success'                => array( 'type' => 'boolean' ),
 					'written'                => array( 'type' => 'boolean' ),
@@ -836,15 +819,7 @@ function extrachill_analytics_register_ingest_revenue_ability() {
 						'type'    => 'integer',
 						'minimum' => 0,
 					),
-					'adopted'                => array(
-						'type'    => 'integer',
-						'minimum' => 0,
-					),
 					'would_delete'           => array(
-						'type'    => 'integer',
-						'minimum' => 0,
-					),
-					'would_adopt'            => array(
 						'type'    => 'integer',
 						'minimum' => 0,
 					),

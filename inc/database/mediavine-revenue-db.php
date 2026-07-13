@@ -416,57 +416,6 @@ function extrachill_analytics_revenue_transaction_rollback() {
 }
 
 /**
- * Count snapshot rows for a period that belong to a DIFFERENT batch.
- *
- * Used by the ingestion ability's replace path to detect legacy / stray
- * snapshots for the same canonical period — the ARC groups by period_label and
- * SUMs every batch, so a second batch for one period silently doubles totals.
- * Counting them (without deleting) lets dry runs and result reporting disclose
- * how many rows adoption WOULD sweep.
- *
- * @param int    $blog_id      Blog ID.
- * @param string $period_label Canonical period label.
- * @param string $import_batch The canonical batch to EXCLUDE.
- * @return int Number of rows in other batches for this blog/period.
- */
-function extrachill_analytics_revenue_count_period_other_batches( $blog_id, $period_label, $import_batch ) {
-	global $wpdb;
-
-	$table = extrachill_analytics_revenue_table();
-	$sql   = "SELECT COUNT(*) FROM {$table} WHERE blog_id = %d AND period_label = %s AND import_batch <> %s";
-
-	// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
-	return (int) $wpdb->get_var( $wpdb->prepare( $sql, $blog_id, $period_label, $import_batch ) );
-}
-
-/**
- * Delete every snapshot row for a period EXCEPT the canonical batch (adoption).
- *
- * Replace mode establishes ONE canonical snapshot per (blog, period) so the ARC
- * cannot double-count a legacy filename-derived batch left over from the old
- * importer flow. This is scoped to (blog_id, period_label) and excludes the
- * canonical batch, so it can never touch another period and never deletes the
- * rows just written. Additive mode never calls this — a parallel snapshot is
- * intentional and must survive.
- *
- * @param int    $blog_id      Blog ID.
- * @param string $period_label Canonical period label.
- * @param string $import_batch The canonical batch to KEEP.
- * @return int|false Rows deleted, or false on error.
- */
-function extrachill_analytics_revenue_delete_period_except_batch( $blog_id, $period_label, $import_batch ) {
-	global $wpdb;
-
-	$table = extrachill_analytics_revenue_table();
-	$sql   = "DELETE FROM {$table} WHERE blog_id = %d AND period_label = %s AND import_batch <> %s";
-
-	// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
-	$result = $wpdb->query( $wpdb->prepare( $sql, $blog_id, $period_label, $import_batch ) );
-
-	return false === $result ? false : (int) $result;
-}
-
-/**
  * Acquire a named advisory lock to serialize ingestion for one period.
  *
  * Concurrent refreshes of the same (blog, period) can otherwise union snapshots:

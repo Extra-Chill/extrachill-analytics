@@ -74,33 +74,6 @@ final class Extrachill_Analytics_Revenue_Store {
 	}
 
 	/**
-	 * Count rows for a period that belong to a DIFFERENT batch (adoption preview).
-	 *
-	 * @param int    $blog_id      Blog ID.
-	 * @param string $period_label Canonical period label.
-	 * @param string $import_batch Canonical batch to exclude.
-	 * @return int
-	 */
-	public function count_period_other_batches( $blog_id, $period_label, $import_batch ) {
-		return extrachill_analytics_revenue_count_period_other_batches( $blog_id, $period_label, $import_batch );
-	}
-
-	/**
-	 * Adopt a period: delete every row whose batch is not the canonical one.
-	 *
-	 * Replace mode establishes one canonical snapshot per (blog, period) so the
-	 * ARC cannot double-count a legacy batch. Additive never calls this.
-	 *
-	 * @param int    $blog_id      Blog ID.
-	 * @param string $period_label Canonical period label.
-	 * @param string $import_batch Canonical batch to keep.
-	 * @return int|false Rows deleted, or false on error.
-	 */
-	public function adopt_period( $blog_id, $period_label, $import_batch ) {
-		return extrachill_analytics_revenue_delete_period_except_batch( $blog_id, $period_label, $import_batch );
-	}
-
-	/**
 	 * Acquire a named advisory lock serializing ingestion for one period.
 	 *
 	 * @param string $name    Lock name.
