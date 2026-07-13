@@ -643,6 +643,7 @@ final class IngestRevenueTest extends TestCase {
 		$rows = $this->rows( array( 'a' => 1.0 ) );
 
 		$this->assertFalse( $this->ingest( $rows, array( 'period' => '2026-13' ) )['success'] );
+		$this->assertFalse( $this->ingest( $rows, array( 'period' => 'May 2026' ) )['success'] );
 		$this->assertFalse( $this->ingest( $rows, array( 'period_start' => '2026-05-02' ) )['success'] );
 		$this->assertFalse(
 			$this->ingest(
@@ -662,6 +663,34 @@ final class IngestRevenueTest extends TestCase {
 				)
 			)['success']
 		);
+
+		$canonical = $this->identity( '2026-05' )['import_batch'];
+		$this->assertFalse(
+			$this->ingest(
+				$rows,
+				array(
+					'period'   => '2026-05',
+					'mode'     => 'additive',
+					'snapshot' => $canonical,
+				)
+			)['success']
+		);
+	}
+
+	/**
+	 * Replace checks the target site while additive always requires network auth.
+	 */
+	public function test_target_blog_and_network_authorization(): void {
+		$GLOBALS['extrachill_ingest_capabilities'] = array( 'manage_options' => true );
+		$this->assertTrue( extrachill_analytics_revenue_ingest_authorize( 1, 'replace' ) );
+		$this->assertFalse( extrachill_analytics_revenue_ingest_authorize( 7, 'replace' ) );
+		$this->assertFalse( extrachill_analytics_revenue_ingest_authorize( 1, 'additive' ) );
+
+		$GLOBALS['extrachill_ingest_site_capabilities'][7]['manage_options'] = true;
+		$this->assertTrue( extrachill_analytics_revenue_ingest_authorize( 7, 'replace' ) );
+
+		$GLOBALS['extrachill_ingest_capabilities']['manage_network_options'] = true;
+		$this->assertTrue( extrachill_analytics_revenue_ingest_authorize( 7, 'additive' ) );
 	}
 
 	/**
