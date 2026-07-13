@@ -3,10 +3,12 @@
  * In-memory revenue store for the ingestion ability tests.
  *
  * Mirrors the production store contract: get_snapshot / upsert (REPLACE on the
- * unique key) / delete_ids / begin / commit / rollback. upsert assigns stable
- * ids; transactions capture a restorable snapshot so rollback behavior is
- * testable. Used by IngestRevenueTest because this repository has no
- * WordPress-DB test scaffold.
+ * unique key) / delete_ids / count_period_other_batches / adopt_period /
+ * begin / commit / rollback / lock / unlock. upsert assigns stable ids;
+ * transactions capture a restorable snapshot so rollback behavior is testable;
+ * failure flags (fail_begin / fail_commit / fail_lock / fail_upsert_after) let
+ * tests exercise fail-closed paths. Used by IngestRevenueTest because this
+ * repository has no WordPress-DB test scaffold.
  *
  * @package ExtraChill\Analytics
  */
@@ -52,6 +54,48 @@ final class Fake_Revenue_Store {
 	public $upsert_count = 0;
 
 	/**
+	 * When true, begin() returns false (fail-closed simulation).
+	 *
+	 * @var bool
+	 */
+	public $fail_begin = false;
+
+	/**
+	 * When true, commit() returns false without clearing the snapshot.
+	 *
+	 * @var bool
+	 */
+	public $fail_commit = false;
+
+	/**
+	 * When true, lock() returns false (lock-contention simulation).
+	 *
+	 * @var bool
+	 */
+	public $fail_lock = false;
+
+	/**
+	 * When true, rollback() returns false after restoring the snapshot.
+	 *
+	 * @var bool
+	 */
+	public $fail_rollback = false;
+
+	/**
+	 * Ordered store calls for transaction/lock sequencing assertions.
+	 *
+	 * @var array<int,string>
+	 */
+	public $operation_log = array();
+
+	/**
+	 * Names of currently held advisory locks (the fake is single-threaded).
+	 *
+	 * @var array<string,true>
+	 */
+	public $locks_held = array();
+
+	/**
 	 * Return the existing rows of exactly one snapshot (objects with id, slug).
 	 *
 	 * @param int    $blog_id      Blog ID.
@@ -60,7 +104,8 @@ final class Fake_Revenue_Store {
 	 * @return array<int, stdClass>
 	 */
 	public function get_snapshot( $blog_id, $period_label, $import_batch ) {
-		$out = array();
+		$this->operation_log[] = 'read';
+		$out                   = array();
 		foreach ( $this->rows as $r ) {
 			if ( $this->matches( $r, $blog_id, $period_label, $import_batch ) ) {
 				$obj       = new stdClass();
@@ -115,11 +160,84 @@ final class Fake_Revenue_Store {
 	}
 
 	/**
-	 * Begin a transaction, capturing a restorable snapshot.
+	 * Count rows for a period that belong to a DIFFERENT batch (adoption preview).
+	 *
+	 * @param int    $blog_id      Blog ID.
+	 * @param string $period_label Period label.
+	 * @param string $import_batch Canonical batch to exclude.
+	 * @return int
+	 */
+	public function count_period_other_batches( $blog_id, $period_label, $import_batch ) {
+		$count = 0;
+		foreach ( $this->rows as $r ) {
+			if ( (int) $r['blog_id'] === (int) $blog_id && (string) $r['period_label'] === (string) $period_label && (string) $r['import_batch'] !== (string) $import_batch ) {
+				++$count;
+			}
+		}
+		return $count;
+	}
+
+	/**
+	 * Adopt a period: delete every row whose batch is not the canonical one.
+	 *
+	 * @param int    $blog_id      Blog ID.
+	 * @param string $period_label Period label.
+	 * @param string $import_batch Canonical batch to keep.
+	 * @return int Rows deleted.
+	 */
+	public function adopt_period( $blog_id, $period_label, $import_batch ) {
+		$removed = 0;
+		foreach ( $this->rows as $i => $r ) {
+			if ( (int) $r['blog_id'] === (int) $blog_id && (string) $r['period_label'] === (string) $period_label && (string) $r['import_batch'] !== (string) $import_batch ) {
+				unset( $this->rows[ $i ] );
+				++$removed;
+			}
+		}
+		$this->rows = array_values( $this->rows );
+		return $removed;
+	}
+
+	/**
+	 * Acquire an advisory lock (single-threaded fake: always succeeds unless flagged).
+	 *
+	 * @param string $name    Lock name.
+	 * @param int    $timeout Seconds to wait (unused in the fake).
+	 * @return bool
+	 */
+	public function lock( $name, $timeout = 10 ) {
+		$this->operation_log[] = 'lock';
+		if ( $timeout < 0 ) {
+			return false;
+		}
+		if ( $this->fail_lock ) {
+			return false;
+		}
+		$this->locks_held[ $name ] = true;
+		return true;
+	}
+
+	/**
+	 * Release an advisory lock.
+	 *
+	 * @param string $name Lock name.
+	 * @return bool
+	 */
+	public function unlock( $name ) {
+		$this->operation_log[] = 'unlock';
+		unset( $this->locks_held[ $name ] );
+		return true;
+	}
+
+	/**
+	 * Begin a transaction, capturing a restorable snapshot. Fail-closed sim.
 	 *
 	 * @return bool
 	 */
 	public function begin() {
+		$this->operation_log[] = 'begin';
+		if ( $this->fail_begin ) {
+			return false;
+		}
 		$this->snapshot = array_map(
 			static function ( $r ) {
 				return $r;
@@ -130,11 +248,16 @@ final class Fake_Revenue_Store {
 	}
 
 	/**
-	 * Commit the active transaction.
+	 * Commit the active transaction. Fail-closed sim leaves the snapshot so
+	 * rollback() can restore the pre-transaction state.
 	 *
 	 * @return bool
 	 */
 	public function commit() {
+		$this->operation_log[] = 'commit';
+		if ( $this->fail_commit ) {
+			return false;
+		}
 		$this->snapshot = null;
 		return true;
 	}
@@ -145,11 +268,12 @@ final class Fake_Revenue_Store {
 	 * @return bool
 	 */
 	public function rollback() {
+		$this->operation_log[] = 'rollback';
 		if ( null !== $this->snapshot ) {
 			$this->rows     = $this->snapshot;
 			$this->snapshot = null;
 		}
-		return true;
+		return ! $this->fail_rollback;
 	}
 
 	/**
@@ -184,6 +308,29 @@ final class Fake_Revenue_Store {
 		foreach ( $this->snapshot_records( $blog_id, $period_label, $import_batch ) as $r ) {
 			$views += (int) $r['views'];
 			$rev   += (float) $r['revenue'];
+		}
+		return array(
+			'views'   => $views,
+			'revenue' => round( $rev, 4 ),
+		);
+	}
+
+	/**
+	 * Sum views + revenue across ALL batches for a (blog, period) — mirrors the
+	 * ARC's period-level SUM, so tests can prove adoption prevents doubling.
+	 *
+	 * @param int    $blog_id      Blog ID.
+	 * @param string $period_label Period label.
+	 * @return array{views:int,revenue:float}
+	 */
+	public function period_totals( $blog_id, $period_label ) {
+		$views = 0;
+		$rev   = 0.0;
+		foreach ( $this->rows as $r ) {
+			if ( (int) $r['blog_id'] === (int) $blog_id && (string) $r['period_label'] === (string) $period_label ) {
+				$views += (int) $r['views'];
+				$rev   += (float) $r['revenue'];
+			}
 		}
 		return array(
 			'views'   => $views,

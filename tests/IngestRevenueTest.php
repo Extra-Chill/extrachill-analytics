@@ -40,7 +40,7 @@ final class IngestRevenueTest extends TestCase {
 	 */
 	protected function setUp(): void {
 		$this->store = new Fake_Revenue_Store();
-		unset( $GLOBALS['extrachill_ingest_url_map'], $GLOBALS['extrachill_ingest_post_map'] );
+		unset( $GLOBALS['extrachill_ingest_url_map'], $GLOBALS['extrachill_ingest_post_map'], $GLOBALS['extrachill_ingest_capabilities'], $GLOBALS['extrachill_ingest_site_capabilities'] );
 	}
 
 	/**
@@ -58,11 +58,31 @@ final class IngestRevenueTest extends TestCase {
 		$b = extrachill_analytics_revenue_snapshot_identity( $base );
 
 		$this->assertSame( $a['import_batch'], $b['import_batch'], 'identical inputs must yield identical batch' );
-		$this->assertSame( 'mediavine-extrachillcom-b1-2026-05', $a['import_batch'] );
+		$this->assertMatchesRegularExpression( '/^mediavine-extrachillcom-b1-2026-05-[a-f0-9]{12}$/', $a['import_batch'] );
 		$this->assertSame( '2026-05', $a['period_label'] );
 		$this->assertSame( '2026-05-01', $a['period_start'] );
 		$this->assertSame( '2026-05-31', $a['period_end'] );
 		$this->assertStringNotContainsString( 'tmp', $a['import_batch'] );
+		$this->assertLessThanOrEqual( 64, strlen( $a['import_batch'] ) );
+	}
+
+	/**
+	 * Hash suffixes prevent sanitized and truncated identity collisions.
+	 */
+	public function test_identity_hash_prevents_sanitization_and_truncation_collisions(): void {
+		$base = array(
+			'blog_id' => 1,
+			'period'  => '2026-05',
+		);
+
+		$dotted = extrachill_analytics_revenue_snapshot_identity( array_merge( $base, array( 'source_site' => 'a.b' ) ) );
+		$plain  = extrachill_analytics_revenue_snapshot_identity( array_merge( $base, array( 'source_site' => 'ab' ) ) );
+		$long_a = extrachill_analytics_revenue_snapshot_identity( array_merge( $base, array( 'source_site' => str_repeat( 'a', 100 ) . 'x' ) ) );
+		$long_b = extrachill_analytics_revenue_snapshot_identity( array_merge( $base, array( 'source_site' => str_repeat( 'a', 100 ) . 'y' ) ) );
+
+		$this->assertNotSame( $dotted['import_batch'], $plain['import_batch'] );
+		$this->assertNotSame( $long_a['import_batch'], $long_b['import_batch'] );
+		$this->assertLessThanOrEqual( 64, strlen( $long_a['import_batch'] ) );
 	}
 
 	/**
@@ -394,6 +414,18 @@ final class IngestRevenueTest extends TestCase {
 	}
 
 	/**
+	 * A real replace inserts all rows when the canonical snapshot is empty.
+	 */
+	public function test_replace_writes_when_existing_snapshot_is_empty(): void {
+		$result = $this->ingest( $this->rows( array( 'a' => 100.0 ) ), array( 'period' => '2026-05' ) );
+
+		$this->assertTrue( $result['success'] );
+		$this->assertTrue( $result['written'] );
+		$this->assertSame( 1, $result['inserted'] );
+		$this->assertCount( 1, $this->store_records( '2026-05' ) );
+	}
+
+	/**
 	 * An invalid mode is rejected with an error and no writes.
 	 */
 	public function test_invalid_mode_is_rejected(): void {
@@ -410,14 +442,14 @@ final class IngestRevenueTest extends TestCase {
 	}
 
 	/**
-	 * Empty input rows is a clean, successful no-op.
+	 * Empty input rows are rejected so a source outage cannot clear a snapshot.
 	 */
-	public function test_empty_rows_is_a_clean_noop(): void {
+	public function test_empty_rows_are_rejected(): void {
 		$result = $this->ingest( array(), array( 'period' => '2026-05' ) );
 
-		$this->assertTrue( $result['success'] );
-		$this->assertSame( 0, $result['rows'] );
-		$this->assertSame( 0, $result['inserted'] );
+		$this->assertFalse( $result['success'] );
+		$this->assertStringContainsString( 'non-empty', $result['error'] );
+		$this->assertEmpty( $this->store->rows );
 	}
 
 	/**
@@ -477,6 +509,162 @@ final class IngestRevenueTest extends TestCase {
 	}
 
 	/**
+	 * The first replace adopts a legacy batch so period totals cannot double.
+	 */
+	public function test_replace_adopts_legacy_batch_without_double_counting(): void {
+		$this->store->rows[] = array(
+			'id'           => 99,
+			'blog_id'      => 1,
+			'slug'         => 'a',
+			'period_label' => '2026-05',
+			'import_batch' => 'mediavine-pages-random-csv',
+			'views'        => 1000,
+			'revenue'      => 100.0,
+		);
+
+		$result = $this->ingest(
+			$this->rows(
+				array(
+					'a' => 150.0,
+					'b' => 50.0,
+				)
+			),
+			array( 'period' => '2026-05' )
+		);
+
+		$this->assertTrue( $result['success'] );
+		$this->assertSame( 1, $result['adopted'] );
+		$this->assertSame(
+			array(
+				'views'   => 2000,
+				'revenue' => 200.0,
+			),
+			$this->store->period_totals( 1, '2026-05' )
+		);
+	}
+
+	/**
+	 * The write path starts its transaction and takes its period lock before read.
+	 */
+	public function test_write_begins_and_locks_before_reading_snapshot(): void {
+		$result = $this->ingest( $this->rows( array( 'a' => 100.0 ) ), array( 'period' => '2026-05' ) );
+
+		$this->assertTrue( $result['success'] );
+		$this->assertSame( array( 'begin', 'lock', 'read' ), array_slice( $this->store->operation_log, 0, 3 ) );
+	}
+
+	/**
+	 * Begin failure aborts before any lock, read, or write.
+	 */
+	public function test_begin_failure_fails_closed_before_read(): void {
+		$this->store->fail_begin = true;
+		$result                  = $this->ingest( $this->rows( array( 'a' => 100.0 ) ), array( 'period' => '2026-05' ) );
+
+		$this->assertFalse( $result['success'] );
+		$this->assertSame( array( 'begin' ), $this->store->operation_log );
+		$this->assertEmpty( $this->store->rows );
+	}
+
+	/**
+	 * Lock failure rolls the open transaction back before returning an error.
+	 */
+	public function test_lock_failure_rolls_back_and_never_reads(): void {
+		$this->store->fail_lock = true;
+		$result                 = $this->ingest( $this->rows( array( 'a' => 100.0 ) ), array( 'period' => '2026-05' ) );
+
+		$this->assertFalse( $result['success'] );
+		$this->assertSame( array( 'begin', 'lock', 'rollback' ), $this->store->operation_log );
+		$this->assertEmpty( $this->store->rows );
+	}
+
+	/**
+	 * Commit failure rolls all writes back and releases the lock.
+	 */
+	public function test_commit_failure_rolls_back_and_fails_closed(): void {
+		$this->store->fail_commit = true;
+		$result                   = $this->ingest( $this->rows( array( 'a' => 100.0 ) ), array( 'period' => '2026-05' ) );
+
+		$this->assertFalse( $result['success'] );
+		$this->assertStringContainsString( 'commit', $result['error'] );
+		$this->assertContains( 'rollback', $this->store->operation_log );
+		$this->assertContains( 'unlock', $this->store->operation_log );
+		$this->assertEmpty( $this->store->rows );
+	}
+
+	/**
+	 * A failed rollback remains a hard failure and is disclosed to the caller.
+	 */
+	public function test_rollback_failure_is_reported_and_never_returns_success(): void {
+		$this->store->fail_commit   = true;
+		$this->store->fail_rollback = true;
+		$result                     = $this->ingest( $this->rows( array( 'a' => 100.0 ) ), array( 'period' => '2026-05' ) );
+
+		$this->assertFalse( $result['success'] );
+		$this->assertFalse( $result['written'] );
+		$this->assertStringContainsString( 'Rollback also failed', $result['error'] );
+		$this->assertSame( array( 'begin', 'lock', 'read', 'commit', 'rollback', 'unlock' ), $this->store->operation_log );
+	}
+
+	/**
+	 * Duplicate raw routes that normalize to one slug keep only the final row.
+	 */
+	public function test_duplicate_normalized_rows_are_deduped(): void {
+		$result = $this->ingest(
+			array(
+				array(
+					'slug'    => '/a/',
+					'views'   => 100,
+					'revenue' => 10.0,
+				),
+				array(
+					'slug'    => 'a',
+					'views'   => 200,
+					'revenue' => 20.0,
+				),
+			),
+			array( 'period' => '2026-05' )
+		);
+
+		$this->assertTrue( $result['success'] );
+		$this->assertSame( 1, $result['duplicate_rows_deduped'] );
+		$this->assertSame(
+			array(
+				'views'   => 200,
+				'revenue' => 20.0,
+			),
+			$this->store_totals( '2026-05' )
+		);
+	}
+
+	/**
+	 * Malformed period/date windows and invalid batch labels are rejected.
+	 */
+	public function test_period_date_and_additive_batch_validation(): void {
+		$rows = $this->rows( array( 'a' => 1.0 ) );
+
+		$this->assertFalse( $this->ingest( $rows, array( 'period' => '2026-13' ) )['success'] );
+		$this->assertFalse( $this->ingest( $rows, array( 'period_start' => '2026-05-02' ) )['success'] );
+		$this->assertFalse(
+			$this->ingest(
+				$rows,
+				array(
+					'period_start' => '2026-05-02',
+					'period_end'   => '2026-05-01',
+				)
+			)['success']
+		);
+		$this->assertFalse(
+			$this->ingest(
+				$rows,
+				array(
+					'mode'     => 'additive',
+					'snapshot' => 'Invalid Label',
+				)
+			)['success']
+		);
+	}
+
+	/**
 	 * The output exposes all required count and identity keys.
 	 */
 	public function test_output_contract_keys(): void {
@@ -526,7 +714,8 @@ final class IngestRevenueTest extends TestCase {
 	public function test_registration_uses_deterministic_identity_not_filename(): void {
 		$source = $this->ability_source();
 		$this->assertStringContainsString( 'extrachill_analytics_revenue_snapshot_identity', $source );
-		$this->assertStringContainsString( "sanitize_key( (string) \$args['source'] )", $source );
+		$this->assertStringContainsString( "hash( 'sha256'", $source );
+		$this->assertStringContainsString( 'sanitize/truncation collisions', $source );
 	}
 
 	/**

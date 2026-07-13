@@ -33,14 +33,30 @@
  * snapshot. The identity is NEVER derived from a temp filename.
  *
  * REPLACEMENT vs ADDITIVE:
- * - `replace` (default): upsert the incoming rows into the deterministic
- *   snapshot AND remove ("replace") any row that belonged to that snapshot but
- *   disappeared from the refreshed source. Scoped to exactly one snapshot, in a
- *   transaction where supported. This is what a recurring fetch wants.
- * - `additive`: NEVER deletes, and REQUIRES an explicit operator-supplied
- *   `snapshot` identity (a distinct parallel batch). This is the only way to
- *   land a second snapshot for the same period on purpose. Additive behavior
- *   cannot happen by accident — the default is always replace.
+ * - `replace` (default): REQUIRES non-empty rows (an empty/omitted set can never
+ *   wipe an existing snapshot). It upserts incoming rows into the deterministic
+ *   snapshot, removes stale rows that disappeared from the refreshed source, AND
+ *   ADOPTS the period — sweeping any OTHER batch for the same (blog, period) so
+ *   a legacy filename-derived batch left over from the old importer flow cannot
+ *   double the ARC on the first ability ingestion. The whole mutation runs in a
+ *   transaction (where supported) under a per-period advisory lock so two
+ *   concurrent refreshes cannot union snapshots.
+ * - `additive`: NEVER deletes or adopts, and REQUIRES an explicit operator-
+ *   supplied `snapshot` identity (a distinct parallel batch) that must NOT
+ *   collide with the deterministic replace identity. This is the only way to
+ *   land a second snapshot for the same period on purpose; it needs network-
+ *   level authorization because it is the path that can intentionally create a
+ *   double-counted snapshot.
+ *
+ * SAFETY:
+ * - `rows` is required and non-empty; an empty/omitted set is rejected and never
+ *   wipes a snapshot.
+ * - Authorization is against the TARGET blog (or network-level); current-site
+ *   `manage_options` cannot mutate an arbitrary blog_id. Additive requires
+ *   network-level capability.
+ * - Transaction begin/commit failures FAIL CLOSED (rollback, success=false);
+ *   the engine never continues non-atomically and never reports success after a
+ *   failed commit.
  *
  * @package ExtraChill\Analytics
  * @since 0.28.0
@@ -70,13 +86,25 @@ defined( 'ABSPATH' ) || exit;
  * @return array{import_batch:string,period_label:string,period_start:string,period_end:string,source:string,source_site:string,blog_id:int}
  */
 function extrachill_analytics_revenue_snapshot_identity( array $args ) {
-	$source = isset( $args['source'] ) && '' !== (string) $args['source']
-		? sanitize_key( (string) $args['source'] )
-		: 'mediavine';
+	$raw_source = isset( $args['source'] ) ? strtolower( trim( (string) $args['source'] ) ) : '';
+	if ( '' === $raw_source ) {
+		$raw_source = 'mediavine';
+	}
+	$source = sanitize_key( $raw_source );
+	if ( '' === $source ) {
+		$source = 'source';
+	}
 
-	$source_site = isset( $args['source_site'] ) && '' !== (string) $args['source_site']
-		? sanitize_key( (string) $args['source_site'] )
-		: sanitize_key( isset( $args['hostname'] ) && '' !== (string) $args['hostname'] ? (string) $args['hostname'] : 'extrachill' );
+	$raw_source_site = isset( $args['source_site'] ) ? strtolower( trim( (string) $args['source_site'] ) ) : '';
+	if ( '' === $raw_source_site ) {
+		$raw_source_site = isset( $args['hostname'] ) && '' !== trim( (string) $args['hostname'] )
+			? strtolower( trim( (string) $args['hostname'] ) )
+			: 'extrachill';
+	}
+	$source_site = sanitize_key( $raw_source_site );
+	if ( '' === $source_site ) {
+		$source_site = 'site';
+	}
 
 	$blog_id = isset( $args['blog_id'] ) ? max( 0, (int) $args['blog_id'] ) : 0;
 
@@ -93,8 +121,18 @@ function extrachill_analytics_revenue_snapshot_identity( array $args ) {
 	if ( $blog_id > 0 ) {
 		$parts[] = 'b' . $blog_id;
 	}
-	$parts[]      = sanitize_key( $resolved['label'] );
-	$import_batch = trim( implode( '-', $parts ), '-' );
+	$parts[] = sanitize_key( $resolved['label'] );
+
+	// The readable prefix is useful operationally, while the hash prevents
+	// sanitize/truncation collisions (for example, "a.b" and "ab") and includes
+	// explicit date overrides. Keep the final value inside varchar(64).
+	$fingerprint  = substr(
+		hash( 'sha256', implode( "\0", array( $raw_source, $raw_source_site, (string) $blog_id, $resolved['label'], $resolved['start'], $resolved['end'] ) ) ),
+		0,
+		12
+	);
+	$prefix       = substr( trim( implode( '-', $parts ), '-' ), 0, 51 );
+	$import_batch = trim( $prefix, '-' ) . '-' . $fingerprint;
 
 	return array(
 		'import_batch' => $import_batch,
@@ -115,9 +153,9 @@ function extrachill_analytics_revenue_snapshot_identity( array $args ) {
  * it classifies each incoming slug as an insert (new to the snapshot) or a
  * replace (already present), and — for replace mode — identifies the stale rows
  * that disappeared from the refreshed source and must be removed. The engine
- * then applies this plan through the store; the plan itself owns every count
- * the ability reports, so the load-bearing logic is fully testable without a
- * database.
+ * then applies this plan through the store; the plan itself owns the within-
+ * batch counts the ability reports, so the load-bearing logic is fully testable
+ * without a database.
  *
  * @param array              $records Normalized incoming records, each with at least a `slug`.
  * @param array<int, object> $existing Existing rows of the target snapshot (objects with `id`, `slug`).
@@ -168,17 +206,112 @@ function extrachill_analytics_revenue_build_ingestion_plan( array $records, arra
 }
 
 /**
+ * Validate a Y-m-d date string is real (not just formatted).
+ *
+ * @param string $date Candidate date.
+ * @return bool
+ */
+function extrachill_analytics_revenue_is_valid_date( $date ) {
+	if ( ! preg_match( '/^(\d{4})-(\d{2})-(\d{2})$/', (string) $date, $m ) ) {
+		return false;
+	}
+	return checkdate( (int) $m[2], (int) $m[3], (int) $m[1] );
+}
+
+/**
+ * Validate the period token and explicit date overrides.
+ *
+ * @param string $period Period token.
+ * @param string $start  Explicit window start.
+ * @param string $end    Explicit window end.
+ * @return string|null Error message, or null when valid.
+ */
+function extrachill_analytics_revenue_validate_period( $period, $start, $end ) {
+	$period = trim( (string) $period );
+	$start  = trim( (string) $start );
+	$end    = trim( (string) $end );
+
+	if ( '' !== $period && ! preg_match( '/^\d{4}(?:-\d{2})?$/', $period ) ) {
+		return 'period must be YYYY-MM, YYYY, or empty.';
+	}
+
+	if ( preg_match( '/^(\d{4})-(\d{2})$/', $period, $m ) ) {
+		$month = (int) $m[2];
+		if ( $month < 1 || $month > 12 ) {
+			return 'period month must be 01-12.';
+		}
+	}
+
+	if ( '' !== $start && ! extrachill_analytics_revenue_is_valid_date( $start ) ) {
+		return 'period_start must be a valid Y-m-d date.';
+	}
+	if ( '' !== $end && ! extrachill_analytics_revenue_is_valid_date( $end ) ) {
+		return 'period_end must be a valid Y-m-d date.';
+	}
+	if ( ( '' === $start ) !== ( '' === $end ) ) {
+		return 'period_start and period_end must be provided together.';
+	}
+	if ( '' !== $start && $start > $end ) {
+		return 'period_start must not be after period_end.';
+	}
+
+	return null;
+}
+
+/**
+ * Authorize a revenue ingestion against the TARGET blog.
+ *
+ * Current-site `manage_options` must not mutate an arbitrary blog_id: the check
+ * is scoped to the requested blog (target-blog capability), or requires a
+ * network-level capability. Additive mode — the path that can intentionally
+ * create a double-counted parallel snapshot — requires network-level authority
+ * regardless of blog. WP-CLI is trusted (server-side operator).
+ *
+ * @param int    $blog_id Target blog.
+ * @param string $mode    'replace' or 'additive'.
+ * @return bool
+ */
+function extrachill_analytics_revenue_ingest_authorize( $blog_id, $mode ) {
+	if ( defined( 'WP_CLI' ) && WP_CLI ) {
+		return true;
+	}
+	if ( ! function_exists( 'current_user_can' ) ) {
+		return false;
+	}
+
+	// Additive creates a parallel snapshot — elevated, network-level capability.
+	if ( 'additive' === $mode ) {
+		return current_user_can( 'manage_network_options' );
+	}
+
+	$current = function_exists( 'get_current_blog_id' ) ? (int) get_current_blog_id() : 0;
+
+	// Replace on the current blog: site-level manage_options is sufficient.
+	if ( (int) $blog_id === $current ) {
+		return current_user_can( 'manage_options' );
+	}
+
+	// Replace on a different blog: target-blog capability OR network-level.
+	if ( function_exists( 'current_user_can_for_site' ) && current_user_can_for_site( $blog_id, 'manage_options' ) ) {
+		return true;
+	}
+	return current_user_can( 'manage_network_options' );
+}
+
+/**
  * Ingest a set of normalized revenue rows into the store with deterministic
  * snapshot identity and explicit replace/additive semantics.
  *
- * The engine resolves + normalizes each row (reusing the shared slug resolver),
- * computes a pure plan against the snapshot's existing rows, then applies it
- * through the supplied `$store` in a transaction (where supported). Dry runs
- * compute identical counts and write nothing.
- *
- * Resolution (url_to_postid) runs against the current blog; when importing for a
- * different blog the engine switches first so the stamped blog_id and resolved
- * post_id agree — mirroring the CSV importer.
+ * Safety contract:
+ * - `rows` is required and non-empty; an empty/omitted set is rejected and
+ *   NEVER wipes an existing snapshot.
+ * - Replace establishes ONE canonical snapshot per (blog, period): it upserts
+ *   incoming rows, removes stale within-batch rows, and ADOPTS the period
+ *   (sweeps any other batch for that period) so a legacy filename-derived batch
+ *   cannot double the ARC.
+ * - The whole mutation runs in a transaction under a per-period advisory lock,
+ *   begun BEFORE the snapshot read, so concurrent refreshes cannot union
+ *   snapshots. Transaction begin/commit failures FAIL CLOSED.
  *
  * @param array                                   $input_rows Normalized revenue rows. Each row may carry a pre-resolved
  *                                                   `post_id`; otherwise the slug is resolved. Metric keys mirror
@@ -210,20 +343,32 @@ function extrachill_analytics_revenue_ingest_rows( array $input_rows, array $arg
 		);
 	}
 
-	// Additive is the explicit opt-in for a parallel snapshot; it MUST NOT
-	// delete, and it requires an operator-supplied snapshot identity so a second
-	// snapshot for the same period is intentional, not accidental.
-	$snapshot_override = isset( $args['snapshot'] ) ? trim( (string) $args['snapshot'] ) : '';
-	if ( 'additive' === $mode && '' === $snapshot_override ) {
+	// SAFETY: rows is required and non-empty. An empty/omitted set can never
+	// wipe an existing snapshot — clearing a snapshot needs a separate,
+	// separately-authorized delete operation (out of scope here).
+	if ( empty( $input_rows ) ) {
 		return array(
 			'success' => false,
-			'error'   => 'additive mode requires an explicit snapshot identity (a distinct batch label). Use replace for the default deterministic snapshot.',
+			'error'   => 'rows is required and must be non-empty.',
 		);
 	}
 
-	$blog_id  = isset( $args['blog_id'] ) && (int) $args['blog_id'] > 0 ? (int) $args['blog_id'] : get_current_blog_id();
-	$hostname = ! empty( $args['hostname'] ) ? (string) $args['hostname'] : 'extrachill.com';
-	$dry_run  = ! empty( $args['dry_run'] );
+	$blog_id           = isset( $args['blog_id'] ) && (int) $args['blog_id'] > 0 ? (int) $args['blog_id'] : get_current_blog_id();
+	$hostname          = ! empty( $args['hostname'] ) ? (string) $args['hostname'] : 'extrachill.com';
+	$dry_run           = ! empty( $args['dry_run'] );
+	$period            = isset( $args['period'] ) ? (string) $args['period'] : '';
+	$period_start_arg  = isset( $args['period_start'] ) ? (string) $args['period_start'] : '';
+	$period_end_arg    = isset( $args['period_end'] ) ? (string) $args['period_end'] : '';
+	$snapshot_override = isset( $args['snapshot'] ) ? trim( (string) $args['snapshot'] ) : '';
+
+	// Validate period token + explicit date overrides.
+	$date_error = extrachill_analytics_revenue_validate_period( $period, $period_start_arg, $period_end_arg );
+	if ( null !== $date_error ) {
+		return array(
+			'success' => false,
+			'error'   => $date_error,
+		);
+	}
 
 	$identity            = extrachill_analytics_revenue_snapshot_identity(
 		array(
@@ -231,37 +376,65 @@ function extrachill_analytics_revenue_ingest_rows( array $input_rows, array $arg
 			'source'       => isset( $args['source'] ) ? (string) $args['source'] : 'mediavine',
 			'source_site'  => isset( $args['source_site'] ) ? (string) $args['source_site'] : $hostname,
 			'hostname'     => $hostname,
-			'period'       => isset( $args['period'] ) ? (string) $args['period'] : '',
-			'period_start' => isset( $args['period_start'] ) ? (string) $args['period_start'] : '',
-			'period_end'   => isset( $args['period_end'] ) ? (string) $args['period_end'] : '',
+			'period'       => $period,
+			'period_start' => $period_start_arg,
+			'period_end'   => $period_end_arg,
 		)
 	);
 	$identity['blog_id'] = $blog_id;
 
-	// An additive snapshot is named by the operator; the period still resolves
-	// deterministically from the period token.
-	if ( 'additive' === $mode && '' !== $snapshot_override ) {
-		$identity['import_batch'] = $snapshot_override;
+	$batch = $identity['import_batch'];
+
+	// Additive: explicit snapshot identity required, must not collide with the
+	// deterministic replace identity (else it would silently overwrite the
+	// canonical snapshot), and must fit the column.
+	if ( 'additive' === $mode ) {
+		if ( '' === $snapshot_override ) {
+			return array(
+				'success' => false,
+				'error'   => 'additive mode requires an explicit snapshot identity (a distinct batch label). Use replace for the default deterministic snapshot.',
+			);
+		}
+		if ( ! preg_match( '/^[a-z0-9][a-z0-9_-]{0,63}$/', $snapshot_override ) ) {
+			return array(
+				'success' => false,
+				'error'   => 'additive snapshot must be 1-64 lowercase letters, numbers, hyphens, or underscores.',
+			);
+		}
+		if ( hash_equals( $batch, $snapshot_override ) ) {
+			return array(
+				'success' => false,
+				'error'   => 'additive snapshot must differ from the deterministic replace identity for this period.',
+			);
+		}
+		$batch                    = $snapshot_override;
+		$identity['import_batch'] = $batch;
+	}
+
+	// Validate the final batch label fits the store's varchar(64) column.
+	if ( '' === $batch || strlen( $batch ) > 64 ) {
+		return array(
+			'success' => false,
+			'error'   => 'snapshot identity must be non-empty and no longer than 64 characters.',
+		);
 	}
 
 	$period_label = $identity['period_label'];
 	$period_start = $identity['period_start'];
 	$period_end   = $identity['period_end'];
-	$batch        = $identity['import_batch'];
 
-	// Resolve + normalize each incoming row against the target blog. Resolution
-	// (url_to_postid) is current-blog-scoped, so switch for the duration to keep
-	// the stamped blog_id and resolved post_id in agreement on a multisite.
+	// Resolve + normalize each incoming row against the target blog, deduping
+	// by normalized slug (last occurrence wins). Resolution (url_to_postid) is
+	// current-blog-scoped, so switch for the duration to keep the stamped
+	// blog_id and resolved post_id in agreement on a multisite.
 	$switched = false;
 	if ( $blog_id > 0 && function_exists( 'switch_to_blog' ) && function_exists( 'get_current_blog_id' ) && get_current_blog_id() !== $blog_id ) {
 		switch_to_blog( $blog_id );
 		$switched = true;
 	}
 
-	$records    = array();
-	$resolved   = 0;
-	$unresolved = 0;
-
+	$by_slug    = array();
+	$duplicates = 0;
 	foreach ( $input_rows as $input ) {
 		$raw_slug = isset( $input['slug'] ) ? (string) $input['slug'] : ( isset( $input['url'] ) ? (string) $input['url'] : '' );
 		if ( '' === trim( $raw_slug ) ) {
@@ -282,13 +455,14 @@ function extrachill_analytics_revenue_ingest_rows( array $input_rows, array $arg
 			$slug         = $resolved_row['slug'];
 		}
 
-		if ( $post_id > 0 ) {
-			++$resolved;
-		} else {
-			++$unresolved;
+		if ( '' === $slug ) {
+			continue;
 		}
 
-		$records[] = array(
+		if ( isset( $by_slug[ $slug ] ) ) {
+			++$duplicates;
+		}
+		$by_slug[ $slug ] = array(
 			'blog_id'                  => $blog_id,
 			'slug'                     => $slug,
 			'url'                      => $raw_slug,
@@ -311,39 +485,31 @@ function extrachill_analytics_revenue_ingest_rows( array $input_rows, array $arg
 		restore_current_blog();
 	}
 
-	$rows_count = count( $records );
+	$records = array_values( $by_slug );
 
-	// Acquire the production store when the caller (production callback) did not
-	// inject one. Tests inject an in-memory fake to exercise the full path.
-	if ( null === $store ) {
-		if ( ! class_exists( 'Extrachill_Analytics_Revenue_Store' ) ) {
-			return array(
-				'success' => false,
-				'error'   => 'Revenue store is not available.',
-			);
+	// Count resolved/unresolved over the DEDUPED set so duplicates don't inflate
+	// the counts.
+	$resolved   = 0;
+	$unresolved = 0;
+	foreach ( $records as $rec ) {
+		if ( $rec['post_id'] > 0 ) {
+			++$resolved;
+		} else {
+			++$unresolved;
 		}
-		$store = new Extrachill_Analytics_Revenue_Store();
 	}
 
-	$existing = $store->get_snapshot( $blog_id, $period_label, $batch );
-	$plan     = extrachill_analytics_revenue_build_ingestion_plan( $records, $existing, $mode );
+	$rows_count = count( $records );
 
-	$inserts  = count( $plan['inserts'] );
-	$replaces = count( $plan['replaces'] );
-	$deletes  = count( $plan['deletes'] );
-
-	$result = array(
-		'success'    => true,
-		'mode'       => $mode,
-		'dry_run'    => $dry_run,
-		'written'    => ! $dry_run,
-		'rows'       => $rows_count,
-		'resolved'   => $resolved,
-		'unresolved' => $unresolved,
-		'inserted'   => $inserts,
-		'replaced'   => $replaces,
-		'deleted'    => $dry_run ? 0 : $deletes,
-		'identity'   => array(
+	$base = array(
+		'mode'                   => $mode,
+		'dry_run'                => $dry_run,
+		'rows'                   => $rows_count,
+		'input_rows'             => count( $input_rows ),
+		'duplicate_rows_deduped' => $duplicates,
+		'resolved'               => $resolved,
+		'unresolved'             => $unresolved,
+		'identity'               => array(
 			'import_batch' => $batch,
 			'period_label' => $period_label,
 			'period_start' => $period_start,
@@ -354,71 +520,170 @@ function extrachill_analytics_revenue_ingest_rows( array $input_rows, array $arg
 		),
 	);
 
-	// Dry run reports the full plan (including deletes that WOULD happen) but
-	// mutates nothing.
-	if ( $dry_run ) {
-		$result['would_delete'] = $deletes;
-		$result['deleted']      = 0;
-		return $result;
+	// A normalized input that reduced to zero usable slugs cannot replace
+	// anything — refuse rather than risk an empty write.
+	if ( 0 === $rows_count ) {
+		return array_merge(
+			array(
+				'success' => false,
+				'written' => false,
+				'error'   => 'rows contained no usable slug after normalization.',
+			),
+			$base
+		);
 	}
 
-	// Nothing to write: no incoming slugs and nothing to remove is a clean
-	// idempotent no-op (e.g. an empty refreshed source clearing a snapshot only
-	// happens when existing rows exist — handled by the deletes branch below).
-	if ( 0 === $inserts && 0 === $replaces && 0 === $deletes ) {
-		return $result;
-	}
-
-	// Apply the plan atomically. On any write failure, roll back so a partially
-	// replaced snapshot never replaces a good one.
-	$txn = $store->begin();
-
-	$write_ok = true;
-	$error    = '';
-
-	foreach ( $plan['inserts'] as $rec ) {
-		if ( false === $store->upsert( $rec ) ) {
-			$write_ok = false;
-			$error    = 'Failed to insert a revenue row.';
-			break;
+	// Acquire the production store when the caller (production callback) did not
+	// inject one. Tests inject an in-memory fake to exercise the full path.
+	if ( null === $store ) {
+		if ( ! class_exists( 'Extrachill_Analytics_Revenue_Store' ) ) {
+			return array_merge(
+				array(
+					'success' => false,
+					'written' => false,
+					'error'   => 'Revenue store is not available.',
+				),
+				$base
+			);
 		}
+		$store = new Extrachill_Analytics_Revenue_Store();
 	}
 
-	if ( $write_ok ) {
-		foreach ( $plan['replaces'] as $rec ) {
+	// Dry run: read the snapshot + count adoption candidates, plan, and report
+	// — mutate nothing. No lock is needed because nothing is written.
+	if ( $dry_run ) {
+		$existing = $store->get_snapshot( $blog_id, $period_label, $batch );
+		$plan     = extrachill_analytics_revenue_build_ingestion_plan( $records, $existing, $mode );
+		$other    = ( 'replace' === $mode )
+			? $store->count_period_other_batches( $blog_id, $period_label, $batch )
+			: 0;
+
+		return array_merge(
+			array(
+				'success'      => true,
+				'written'      => false,
+				'inserted'     => count( $plan['inserts'] ),
+				'replaced'     => count( $plan['replaces'] ),
+				'deleted'      => 0,
+				'would_delete' => count( $plan['deletes'] ),
+				'adopted'      => 0,
+				'would_adopt'  => $other,
+			),
+			$base
+		);
+	}
+
+	// WRITE PATH — critical section. Begin the transaction BEFORE the snapshot
+	// read and hold a per-period advisory lock so two concurrent refreshes
+	// cannot both read the prior snapshot and union their writes. Begin/commit
+	// failures fail CLOSED (rollback, success=false): the engine never continues
+	// non-atomically and never reports success after a failed commit.
+	if ( false === $store->begin() ) {
+		return array_merge(
+			array(
+				'success' => false,
+				'written' => false,
+				'error'   => 'Could not begin a transaction; ingestion aborted (fail closed).',
+			),
+			$base
+		);
+	}
+
+	$lock_name = 'ecrev_ing_' . md5( $blog_id . ':' . $period_label );
+	if ( false === $store->lock( $lock_name, 10 ) ) {
+		$rollback_ok = $store->rollback();
+		return array_merge(
+			array(
+				'success' => false,
+				'written' => false,
+				'error'   => 'Could not acquire the ingestion lock for this period; another refresh may be in progress.' . ( false === $rollback_ok ? ' Rollback also failed.' : '' ),
+			),
+			$base
+		);
+	}
+
+	$op_error       = null;
+	$adopted        = 0;
+	$deletes_count  = 0;
+	$inserts_count  = 0;
+	$replaces_count = 0;
+
+	try {
+		$existing = $store->get_snapshot( $blog_id, $period_label, $batch );
+		$plan     = extrachill_analytics_revenue_build_ingestion_plan( $records, $existing, $mode );
+
+		$inserts_count  = count( $plan['inserts'] );
+		$replaces_count = count( $plan['replaces'] );
+		$deletes_count  = count( $plan['deletes'] );
+
+		foreach ( $plan['inserts'] as $rec ) {
 			if ( false === $store->upsert( $rec ) ) {
-				$write_ok = false;
-				$error    = 'Failed to replace a revenue row.';
+				$op_error = 'Failed to insert a revenue row.';
 				break;
 			}
 		}
-	}
-
-	if ( $write_ok && ! empty( $plan['deletes'] ) ) {
-		if ( false === $store->delete_ids( $plan['deletes'] ) ) {
-			$write_ok = false;
-			$error    = 'Failed to remove stale revenue rows.';
+		if ( null === $op_error ) {
+			foreach ( $plan['replaces'] as $rec ) {
+				if ( false === $store->upsert( $rec ) ) {
+					$op_error = 'Failed to replace a revenue row.';
+					break;
+				}
+			}
 		}
-	}
-
-	if ( ! $write_ok ) {
-		if ( $txn ) {
-			$store->rollback();
+		if ( null === $op_error && ! empty( $plan['deletes'] ) ) {
+			if ( false === $store->delete_ids( $plan['deletes'] ) ) {
+				$op_error = 'Failed to remove stale revenue rows.';
+			}
 		}
-		$result['success'] = false;
-		$result['written'] = false;
-		unset( $result['mode'], $result['dry_run'] );
-		$result['mode']    = $mode;
-		$result['dry_run'] = false;
-		$result['error']   = $error;
-		return $result;
+		// Adopt the period: replace establishes ONE canonical snapshot per
+		// (blog, period), sweeping any other batch (legacy filename-derived or
+		// stray) so the ARC cannot double-count on the first ability ingestion.
+		if ( null === $op_error && 'replace' === $mode ) {
+			$adopted = $store->adopt_period( $blog_id, $period_label, $batch );
+			if ( false === $adopted ) {
+				$op_error = 'Failed to adopt the canonical period snapshot.';
+			}
+		}
+		if ( null === $op_error && false === $store->commit() ) {
+			$op_error = 'Failed to commit the revenue snapshot.';
+		}
+	} catch ( Throwable $throwable ) {
+		$op_error = 'Revenue ingestion failed: ' . $throwable->getMessage();
+	} finally {
+		if ( null !== $op_error ) {
+			$rollback_ok = $store->rollback();
+			if ( false === $rollback_ok ) {
+				$op_error .= ' Rollback also failed.';
+			}
+		}
+		// Keep rollback inside the lock; then always release the advisory lock.
+		$store->unlock( $lock_name );
 	}
 
-	if ( $txn ) {
-		$store->commit();
+	if ( null !== $op_error ) {
+		return array_merge(
+			array(
+				'success'  => false,
+				'written'  => false,
+				'error'    => $op_error,
+				'inserted' => $inserts_count,
+				'replaced' => $replaces_count,
+			),
+			$base
+		);
 	}
 
-	return $result;
+	return array_merge(
+		array(
+			'success'  => true,
+			'written'  => true,
+			'inserted' => $inserts_count,
+			'replaced' => $replaces_count,
+			'deleted'  => $deletes_count,
+			'adopted'  => (int) $adopted,
+		),
+		$base
+	);
 }
 
 /**
@@ -433,20 +698,46 @@ function extrachill_analytics_register_ingest_revenue_ability() {
 		'extrachill/ingest-revenue',
 		array(
 			'label'               => __( 'Ingest Revenue Snapshot', 'extrachill-analytics' ),
-			'description'         => __( 'Idempotently ingest a set of per-URL ad-revenue rows (e.g. a Mediavine period export) into the revenue store with a deterministic snapshot identity. Default mode is deterministic REPLACE: the same source/site/blog/period always lands on the SAME snapshot, updating rows in place and removing any that disappeared from the refreshed source, so re-running identical inputs never double-counts the ARC or rollups. ADDITIVE mode never deletes and requires an explicit operator-supplied snapshot identity to create a distinct parallel snapshot on purpose. Accepts normalized revenue rows plus source provenance; agnostic about the upstream source ability. Supports dry-run. Owned by analytics: validation, period/snapshot identity, replacement, resolution, and persistence all live here.', 'extrachill-analytics' ),
+			'description'         => __( 'Idempotently ingest a set of per-URL ad-revenue rows (e.g. a Mediavine period export) into the revenue store with a deterministic snapshot identity. Default mode is deterministic REPLACE: the same source/site/blog/period always lands on the SAME snapshot, updating rows in place, removing any that disappeared from the refreshed source, and ADOPTING the period (sweeping legacy batches) so the ARC never double-counts. REQUIRES non-empty rows — an empty/omitted set never wipes a snapshot. ADDITIVE mode never deletes/adopts and requires an explicit, non-colliding snapshot identity plus network-level authorization. Replace authorizes against the TARGET blog (or network). The whole mutation runs in a transaction under a per-period advisory lock; begin/commit failures fail closed. Accepts normalized revenue rows plus source provenance; agnostic about the upstream source ability. Supports dry-run. Owned by analytics: validation, period/snapshot identity, replacement, adoption, resolution, and persistence all live here.', 'extrachill-analytics' ),
 			'category'            => 'extrachill-analytics',
 			'input_schema'        => array(
 				'type'       => 'object',
 				'properties' => array(
 					'rows'         => array(
 						'type'        => 'array',
-						'description' => __( 'Normalized per-URL revenue rows. Each row carries a slug/url plus metrics (views, revenue, rpm, cpm, viewability, fill_rate, impressions_per_pageview) and an optional pre-resolved post_id.', 'extrachill-analytics' ),
-						'default'     => array(),
+						'description' => __( 'REQUIRED, non-empty. Normalized per-URL revenue rows. Each row carries a slug/url plus metrics (views, revenue, rpm, cpm, viewability, fill_rate, impressions_per_pageview) and an optional pre-resolved post_id. Duplicate slugs are deduped (last wins).', 'extrachill-analytics' ),
+						'minItems'    => 1,
+						'items'       => array(
+							'type'       => 'object',
+							'properties' => array(
+								'slug'                     => array( 'type' => 'string' ),
+								'url'                      => array( 'type' => 'string' ),
+								'post_id'                  => array(
+									'type'    => 'integer',
+									'minimum' => 0,
+								),
+								'views'                    => array(
+									'type'    => 'integer',
+									'minimum' => 0,
+								),
+								'revenue'                  => array( 'type' => 'number' ),
+								'rpm'                      => array( 'type' => 'number' ),
+								'cpm'                      => array( 'type' => 'number' ),
+								'viewability'              => array( 'type' => 'number' ),
+								'fill_rate'                => array( 'type' => 'number' ),
+								'impressions_per_pageview' => array( 'type' => 'number' ),
+							),
+							'anyOf'      => array(
+								array( 'required' => array( 'slug' ) ),
+								array( 'required' => array( 'url' ) ),
+							),
+						),
 					),
 					'blog_id'      => array(
 						'type'        => 'integer',
-						'description' => __( 'Blog the rows belong to. 0 = current blog.', 'extrachill-analytics' ),
+						'description' => __( 'Blog the rows belong to. 0 = current blog. Replace authorizes against this target blog (target-blog capability) or requires network-level capability.', 'extrachill-analytics' ),
 						'default'     => 0,
+						'minimum'     => 0,
 					),
 					'hostname'     => array(
 						'type'        => 'string',
@@ -465,43 +756,124 @@ function extrachill_analytics_register_ingest_revenue_ability() {
 					),
 					'period'       => array(
 						'type'        => 'string',
-						'description' => __( 'Period token these rows belong to: YYYY-MM (a monthly export), YYYY (a year), or "" for the flat lifetime file. Part of the snapshot identity and the canonical period_label the ARC groups by.', 'extrachill-analytics' ),
+						'description' => __( 'Period token: YYYY-MM (monthly), YYYY (yearly), or "" for the flat lifetime file. Part of the snapshot identity and the canonical period_label the ARC groups by.', 'extrachill-analytics' ),
 						'default'     => '',
+						'pattern'     => '^(?:\\d{4}(?:-(?:0[1-9]|1[0-2]))?)?$',
 					),
 					'period_start' => array(
 						'type'        => 'string',
-						'description' => __( 'Explicit window start (Y-m-d) override. Defaults to the start derived from period.', 'extrachill-analytics' ),
+						'description' => __( 'Explicit window start (Y-m-d) override. Must be a valid date when non-empty. Defaults to the start derived from period.', 'extrachill-analytics' ),
 						'default'     => '',
+						'pattern'     => '^(?:\\d{4}-\\d{2}-\\d{2})?$',
 					),
 					'period_end'   => array(
 						'type'        => 'string',
-						'description' => __( 'Explicit window end (Y-m-d) override. Defaults to the end derived from period.', 'extrachill-analytics' ),
+						'description' => __( 'Explicit window end (Y-m-d) override. Must be a valid date when non-empty. Defaults to the end derived from period.', 'extrachill-analytics' ),
 						'default'     => '',
+						'pattern'     => '^(?:\\d{4}-\\d{2}-\\d{2})?$',
 					),
 					'mode'         => array(
 						'type'        => 'string',
-						'description' => __( '"replace" (default) updates the deterministic snapshot in place and removes stale rows; "additive" never deletes and requires an explicit snapshot identity to create a parallel snapshot. Additive behavior cannot happen by accident.', 'extrachill-analytics' ),
+						'description' => __( '"replace" (default) updates the deterministic snapshot in place, removes stale rows, and adopts the period; "additive" never deletes/adopts and requires an explicit snapshot identity plus network-level authorization. Additive cannot happen by accident.', 'extrachill-analytics' ),
 						'default'     => 'replace',
+						'enum'        => array( 'replace', 'additive' ),
 					),
 					'snapshot'     => array(
 						'type'        => 'string',
-						'description' => __( 'Explicit snapshot identity (batch label). REQUIRED for additive mode (the operator names the parallel snapshot). Ignored for replace, which always uses the deterministic identity.', 'extrachill-analytics' ),
+						'description' => __( 'Explicit snapshot identity (batch label). REQUIRED for additive mode (must differ from the deterministic replace identity). Ignored for replace, which always uses the deterministic identity.', 'extrachill-analytics' ),
 						'default'     => '',
+						'maxLength'   => 64,
+						'pattern'     => '^(?:[a-z0-9][a-z0-9_-]{0,63})?$',
 					),
 					'dry_run'      => array(
 						'type'        => 'boolean',
-						'description' => __( 'If true, resolve + plan but write nothing. Reported counts reflect what would happen.', 'extrachill-analytics' ),
+						'description' => __( 'If true, resolve + plan but write nothing. Reported counts reflect what would happen (would_delete, would_adopt).', 'extrachill-analytics' ),
 						'default'     => false,
 					),
 				),
+				'required'   => array( 'rows' ),
 			),
 			'output_schema'       => array(
 				'type'        => 'object',
-				'description' => __( 'Result with success, written, mode, dry_run, counts (rows, resolved, unresolved, inserted, replaced, deleted), and the stable identity (import_batch, period_label, period_start/end, source, source_site, blog_id).', 'extrachill-analytics' ),
+				'description' => __( 'Result with success, written, mode, dry_run, counts (rows, input_rows, duplicate_rows_deduped, resolved, unresolved, inserted, replaced, deleted, adopted, and would_delete/would_adopt on dry run), and the stable identity (import_batch, period_label, period_start/end, source, source_site, blog_id). On failure: success=false, written=false, error.', 'extrachill-analytics' ),
+				'properties'  => array(
+					'success'                => array( 'type' => 'boolean' ),
+					'written'                => array( 'type' => 'boolean' ),
+					'mode'                   => array(
+						'type' => 'string',
+						'enum' => array( 'replace', 'additive' ),
+					),
+					'dry_run'                => array( 'type' => 'boolean' ),
+					'rows'                   => array(
+						'type'    => 'integer',
+						'minimum' => 0,
+					),
+					'input_rows'             => array(
+						'type'    => 'integer',
+						'minimum' => 0,
+					),
+					'duplicate_rows_deduped' => array(
+						'type'    => 'integer',
+						'minimum' => 0,
+					),
+					'resolved'               => array(
+						'type'    => 'integer',
+						'minimum' => 0,
+					),
+					'unresolved'             => array(
+						'type'    => 'integer',
+						'minimum' => 0,
+					),
+					'inserted'               => array(
+						'type'    => 'integer',
+						'minimum' => 0,
+					),
+					'replaced'               => array(
+						'type'    => 'integer',
+						'minimum' => 0,
+					),
+					'deleted'                => array(
+						'type'    => 'integer',
+						'minimum' => 0,
+					),
+					'adopted'                => array(
+						'type'    => 'integer',
+						'minimum' => 0,
+					),
+					'would_delete'           => array(
+						'type'    => 'integer',
+						'minimum' => 0,
+					),
+					'would_adopt'            => array(
+						'type'    => 'integer',
+						'minimum' => 0,
+					),
+					'error'                  => array( 'type' => 'string' ),
+					'identity'               => array(
+						'type'       => 'object',
+						'properties' => array(
+							'import_batch' => array( 'type' => 'string' ),
+							'period_label' => array( 'type' => 'string' ),
+							'period_start' => array( 'type' => 'string' ),
+							'period_end'   => array( 'type' => 'string' ),
+							'source'       => array( 'type' => 'string' ),
+							'source_site'  => array( 'type' => 'string' ),
+							'blog_id'      => array(
+								'type'    => 'integer',
+								'minimum' => 1,
+							),
+						),
+						'required'   => array( 'import_batch', 'period_label', 'period_start', 'period_end', 'source', 'source_site', 'blog_id' ),
+					),
+				),
+				'required'    => array( 'success' ),
 			),
 			'execute_callback'    => 'extrachill_analytics_ability_ingest_revenue',
 			'permission_callback' => function () {
-				return current_user_can( 'manage_options' ) || ( defined( 'WP_CLI' ) && WP_CLI );
+				// First-pass REST gate (current site). Target-blog / network
+				// authorization is enforced inside the execute callback, which
+				// sees the requested blog_id and mode.
+				return current_user_can( 'manage_options' ) || current_user_can( 'manage_network_options' ) || ( defined( 'WP_CLI' ) && WP_CLI );
 			},
 			'meta'                => array(
 				'show_in_rest' => false,
@@ -518,23 +890,40 @@ function extrachill_analytics_register_ingest_revenue_ability() {
 /**
  * Execute callback for the ingest-revenue ability.
  *
+ * Performs target-blog / network authorization against the requested blog and
+ * mode, then delegates to the engine.
+ *
  * @param array $input Input parameters.
- * @return array Ingestion result.
+ * @return array|\WP_Error Ingestion result, or WP_Error when unauthorized.
  */
 function extrachill_analytics_ability_ingest_revenue( $input ) {
-	$rows = isset( $input['rows'] ) && is_array( $input['rows'] ) ? $input['rows'] : array();
+	$rows    = isset( $input['rows'] ) && is_array( $input['rows'] ) ? $input['rows'] : array();
+	$blog_id = isset( $input['blog_id'] ) ? (int) $input['blog_id'] : 0;
+	$mode    = isset( $input['mode'] ) ? (string) $input['mode'] : 'replace';
+	$target  = $blog_id > 0 ? $blog_id : ( function_exists( 'get_current_blog_id' ) ? (int) get_current_blog_id() : 0 );
+
+	if ( ! extrachill_analytics_revenue_ingest_authorize( $target, $mode ) ) {
+		return new WP_Error(
+			'extrachill_ingest_revenue_unauthorized',
+			'additive' === $mode
+				? __( 'You are not authorized to create an additive revenue snapshot (requires network-level capability).', 'extrachill-analytics' )
+				/* translators: %d: blog ID */
+				: sprintf( __( 'You are not authorized to ingest revenue for blog %d.', 'extrachill-analytics' ), $target ),
+			array( 'status' => 403 )
+		);
+	}
 
 	return extrachill_analytics_revenue_ingest_rows(
 		$rows,
 		array(
-			'blog_id'      => isset( $input['blog_id'] ) ? (int) $input['blog_id'] : 0,
+			'blog_id'      => $blog_id,
 			'hostname'     => isset( $input['hostname'] ) ? (string) $input['hostname'] : 'extrachill.com',
 			'source'       => isset( $input['source'] ) ? (string) $input['source'] : 'mediavine',
 			'source_site'  => isset( $input['source_site'] ) ? (string) $input['source_site'] : '',
 			'period'       => isset( $input['period'] ) ? (string) $input['period'] : '',
 			'period_start' => isset( $input['period_start'] ) ? (string) $input['period_start'] : '',
 			'period_end'   => isset( $input['period_end'] ) ? (string) $input['period_end'] : '',
-			'mode'         => isset( $input['mode'] ) ? (string) $input['mode'] : 'replace',
+			'mode'         => $mode,
 			'snapshot'     => isset( $input['snapshot'] ) ? (string) $input['snapshot'] : '',
 			'dry_run'      => ! empty( $input['dry_run'] ),
 		)

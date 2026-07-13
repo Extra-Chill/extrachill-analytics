@@ -162,6 +162,31 @@ if ( ! function_exists( 'get_current_blog_id' ) ) {
 		return 1;
 	}
 }
+if ( ! function_exists( 'current_user_can' ) ) {
+	/**
+	 * Stub current_user_can() against a capability map in $GLOBALS.
+	 *
+	 * @param string $capability Capability name.
+	 * @return bool Whether the test granted the capability.
+	 */
+	function current_user_can( $capability ) {
+		$caps = isset( $GLOBALS['extrachill_ingest_capabilities'] ) ? $GLOBALS['extrachill_ingest_capabilities'] : array();
+		return ! empty( $caps[ $capability ] );
+	}
+}
+if ( ! function_exists( 'current_user_can_for_site' ) ) {
+	/**
+	 * Stub target-site capability checks against a per-site map.
+	 *
+	 * @param int    $site_id    Site ID.
+	 * @param string $capability Capability name.
+	 * @return bool Whether the test granted the capability on that site.
+	 */
+	function current_user_can_for_site( $site_id, $capability ) {
+		$sites = isset( $GLOBALS['extrachill_ingest_site_capabilities'] ) ? $GLOBALS['extrachill_ingest_site_capabilities'] : array();
+		return ! empty( $sites[ (int) $site_id ][ $capability ] );
+	}
+}
 if ( ! function_exists( 'switch_to_blog' ) ) {
 	/**
 	 * Stub for switch_to_blog().
