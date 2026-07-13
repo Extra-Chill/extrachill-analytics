@@ -201,6 +201,8 @@ function extrachill_analytics_revenue_upsert( array $row ) {
  * that mix multiple imports should pass an import_batch to avoid double-counting.
  *
  * @param array $args {
+ *     Query arguments.
+ *
  *     Query args.
  *
  *     @type int    $blog_id      Blog ID (default: current blog).
@@ -214,7 +216,33 @@ function extrachill_analytics_revenue_upsert( array $row ) {
 function extrachill_analytics_revenue_get_rows( array $args = array() ) {
 	global $wpdb;
 
-	$table        = extrachill_analytics_revenue_table();
+	$table = extrachill_analytics_revenue_table();
+
+	list( $where_clause, $values ) = extrachill_analytics_revenue_build_scope_clause( $args );
+	$sql                           = "SELECT * FROM {$table} WHERE {$where_clause}";
+
+	// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+	return (array) $wpdb->get_results( $wpdb->prepare( $sql, $values ) );
+}
+
+/**
+ * Build the canonical scope WHERE clause + bound values for a revenue query.
+ *
+ * Centralized so every read path (get_rows, get_scope_totals) constructs the
+ * identical scope from the same args — no drift. Pure: no DB access.
+ *
+ * @param array $args {
+ *     Query arguments.
+ *
+ *     @type int    $blog_id      Blog ID (default: current blog).
+ *     @type string $import_batch Restrict to one import batch (default: '' = any).
+ *     @type string $period_label Restrict to one time bucket (default: '' = any).
+ *     @type string $period_start Inclusive window start (Y-m-d), or '' for any.
+ *     @type string $period_end   Inclusive window end (Y-m-d), or '' for any.
+ * }
+ * @return array{0:string,1:array<int,mixed>} Tuple of (WHERE clause, values).
+ */
+function extrachill_analytics_revenue_build_scope_clause( array $args = array() ) {
 	$blog_id      = isset( $args['blog_id'] ) ? (int) $args['blog_id'] : get_current_blog_id();
 	$import_batch = isset( $args['import_batch'] ) ? (string) $args['import_batch'] : '';
 	$period_label = isset( $args['period_label'] ) ? (string) $args['period_label'] : '';
@@ -244,11 +272,34 @@ function extrachill_analytics_revenue_get_rows( array $args = array() ) {
 		$values[] = $period_end;
 	}
 
-	$where_clause = implode( ' AND ', $where );
-	$sql          = "SELECT * FROM {$table} WHERE {$where_clause}";
+	return array( implode( ' AND ', $where ), $values );
+}
+
+/**
+ * Independent SQL aggregate of rows, views, and revenue for a scope.
+ *
+ * Used by the diagnostics totals_reconciliation check as the INDEPENDENT
+ * read-model side: MySQL's SUM() aggregator over the canonical scope, compared
+ * against the PHP row-sum of get_rows() for the same scope. A divergence between
+ * the two is a meaningful read-path regression signal (row hydration, type
+ * coercion, a silent row cap) — the opposite of comparing a precomputed sum to
+ * itself.
+ *
+ * @param array $args See extrachill_analytics_revenue_build_scope_clause().
+ * @return object|null { rows_count, views, revenue } or null on error.
+ */
+function extrachill_analytics_revenue_get_scope_totals( array $args = array() ) {
+	global $wpdb;
+
+	$table = extrachill_analytics_revenue_table();
+
+	list( $where_clause, $values ) = extrachill_analytics_revenue_build_scope_clause( $args );
+
+	// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared -- $where_clause is built only from hardcoded fragments whose values are bound via prepare().
+	$sql = "SELECT COUNT(*) AS rows_count, COALESCE( SUM( views ), 0 ) AS views, COALESCE( SUM( revenue ), 0 ) AS revenue FROM {$table} WHERE {$where_clause}";
 
 	// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
-	return (array) $wpdb->get_results( $wpdb->prepare( $sql, $values ) );
+	return $wpdb->get_row( $wpdb->prepare( $sql, $values ) );
 }
 
 /**

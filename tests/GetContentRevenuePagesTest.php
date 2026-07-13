@@ -205,13 +205,13 @@ final class GetContentRevenuePagesTest extends TestCase {
 	}
 
 	/**
-	 * URL-variant rows of one post collapse by page_key; views/revenue sum,
-	 * rates are views-weighted averages.
+	 * M3: URL-variant rows of one post collapse by page_key; views/revenue sum,
+	 * rate metrics are simple-averaged (no invented denominators). derived_rpm is
+	 * recomputed from the summed revenue/views and remains the correct aggregate.
 	 */
-	public function test_variant_rows_collapse_and_weighted_rates(): void {
+	public function test_variant_rows_collapse_and_source_average_rates(): void {
 		$records = array(
-			// Two variants of p1: 1000 views @ RPM 100, 3000 views @ RPM 40.
-			// Weighted source_rpm = (100*1000 + 40*3000) / 4000 = 55.
+			// Two variants of p1: 1000 views @ source_rpm 100, 3000 views @ source_rpm 40.
 			$this->content(
 				array(
 					'page_key'   => 'p1',
@@ -234,15 +234,123 @@ final class GetContentRevenuePagesTest extends TestCase {
 
 		$this->assertCount( 1, $built['pages'] );
 		$page = $built['pages'][0];
-		// Summed volume.
+		// Volume summed.
 		$this->assertSame( 4000, $page['views'] );
 		$this->assertEquals( 220.0, $page['revenue'] );
 		// Derived RPM recomputed from the SUM: 220 / 4 = 55.
 		$this->assertEquals( 55.0, $page['derived_rpm'] );
-		// Source RPM is the views-weighted average, NOT the derived value.
-		$this->assertEquals( 55.0, $page['source_rpm'] );
+		// Source RPM is simple-averaged across the two variants: (100 + 40) / 2 = 70.
+		// (NOT views-weighted, because the true denominator is not stored.).
+		$this->assertEquals( 70.0, $page['source_rpm'] );
 		// One page counted once.
 		$this->assertSame( 1, $built['sample']['resolved_pages'] );
+	}
+
+	/**
+	 * M1: totals (views/revenue/zero_views) cover the FULL cohort BEFORE the
+	 * limit, not just the truncated top-N returned.
+	 */
+	public function test_totals_reflect_full_cohort_before_limit(): void {
+		$records = array();
+		for ( $i = 1; $i <= 5; $i++ ) {
+			$records[] = $this->content(
+				array(
+					'page_key' => 'p' . $i,
+					'views'    => 1000,
+					'revenue'  => 10.0 * $i,
+				)
+			);
+		}
+
+		$built = extrachill_analytics_revenue_build_pages(
+			$records,
+			array(
+				'cohort'  => 'resolved',
+				'sort_by' => 'revenue',
+				'order'   => 'desc',
+				'limit'   => 2,
+			)
+		);
+
+		// Only 2 pages returned.
+		$this->assertCount( 2, $built['pages'] );
+		$this->assertSame( 2, $built['totals']['pages_returned'] );
+		// But totals cover all 5 pages (full cohort before the limit).
+		$this->assertSame( 5, $built['totals']['pages_before_limit'] );
+		$this->assertSame( 5, $built['totals']['cohort_pages'] );
+		$this->assertSame( 5000, $built['totals']['views'] );
+		// Revenue 10+20+30+40+50 = 150.
+		$this->assertEquals( 150.0, $built['totals']['revenue'] );
+	}
+
+	/**
+	 * The implicit scope selects one freshest period/batch pair.
+	 */
+	public function test_default_scope_selects_one_freshest_batch(): void {
+		$batches = array(
+			(object) array(
+				'period_label' => '2026-06',
+				'period_end'   => '2026-06-30',
+				'import_batch' => 'newest-june',
+			),
+			(object) array(
+				'period_label' => '2026-06',
+				'period_end'   => '2026-06-30',
+				'import_batch' => 'older-june',
+			),
+			(object) array(
+				'period_label' => 'all-time',
+				'period_end'   => null,
+				'import_batch' => 'lifetime',
+			),
+		);
+
+		$scope = extrachill_analytics_revenue_select_default_scope( $batches );
+
+		$this->assertSame( '2026-06', $scope['effective_period'] );
+		$this->assertSame( 'newest-june', $scope['effective_batch'] );
+		$this->assertTrue( $scope['defaulted'] );
+	}
+
+	/**
+	 * Cohort totals exclude pages from the other cohort before min_views.
+	 */
+	public function test_cohort_pages_counts_only_selected_cohort(): void {
+		$built = extrachill_analytics_revenue_build_pages(
+			array(
+				$this->content( array( 'page_key' => 'p1' ) ),
+				$this->unresolved( array( 'page_key' => 'u1' ) ),
+			),
+			array( 'cohort' => 'resolved' )
+		);
+
+		$this->assertSame( 1, $built['totals']['cohort_pages'] );
+	}
+
+	/**
+	 * M6/B2/B4: source-string contract — the callback populates path, enforces
+	 * blog authorization, switch_to_blog around resolution, applies the default
+	 * window contract, and exposes selected periods/batches.
+	 */
+	public function test_callback_populates_path_and_enforces_auth_and_scope(): void {
+		$source = $this->ability_source();
+
+		// path is derived from the permalink.
+		$this->assertStringContainsString( 'wp_make_link_relative', $source );
+		// Network/blog authorization.
+		$this->assertStringContainsString( 'extrachill_analytics_revenue_authorize_blog_read', $source );
+		$this->assertStringContainsString( 'manage_network_options', $source );
+		// switch_to_blog around resolution.
+		$this->assertStringContainsString( 'extrachill_analytics_revenue_maybe_switch_to_blog', $source );
+		$this->assertStringContainsString( 'extrachill_analytics_revenue_maybe_restore_blog', $source );
+		// Default window contract (freshest dated period).
+		$this->assertStringContainsString( 'extrachill_analytics_revenue_resolve_default_period', $source );
+		// Selected periods/batches exposed.
+		$this->assertStringContainsString( "'selected_periods'", $source );
+		$this->assertStringContainsString( "'selected_batches'", $source );
+		// Reuses shared substrate (no new SQL/table).
+		$this->assertStringContainsString( 'extrachill_analytics_revenue_get_rows', $source );
+		$this->assertStringNotContainsString( 'CREATE TABLE', $source );
 	}
 
 	/**
@@ -568,6 +676,7 @@ final class GetContentRevenuePagesTest extends TestCase {
 		$this->assertSame( 42, $page['post_id'] );
 		$this->assertSame( 'Grateful Dead Ripple Meaning', $page['title'] );
 		$this->assertSame( 'https://extrachill.com/ripple-meaning/', $page['url'] );
+		$this->assertSame( '/song/', $page['path'] );
 		$this->assertSame( 'song-meaning', $page['format'] );
 		$this->assertSame( array( 'song-meanings' ), $page['categories'] );
 		$this->assertSame( '2022-03-15 10:00:00', $page['published_date'] );
