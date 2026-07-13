@@ -97,8 +97,8 @@ function extrachill_analytics_register_content_revenue_pages_ability() {
 					),
 					'hostname'          => array(
 						'type'        => 'string',
-						'description' => __( 'Hostname for resolving any still-unresolved slugs to posts (default: extrachill.com).', 'extrachill-analytics' ),
-						'default'     => 'extrachill.com',
+						'description' => __( 'Optional hostname for resolving relative slugs to posts. Empty = the target blog hostname.', 'extrachill-analytics' ),
+						'default'     => '',
 					),
 					'cohort'            => array(
 						'type'        => 'string',
@@ -409,7 +409,7 @@ function extrachill_analytics_ability_get_content_revenue_pages( $input ) {
 	$period_end        = isset( $input['period_end'] ) ? (string) $input['period_end'] : '';
 	$import_batch      = isset( $input['import_batch'] ) ? (string) $input['import_batch'] : '';
 	$blog_id           = ! empty( $input['blog_id'] ) ? (int) $input['blog_id'] : get_current_blog_id();
-	$hostname          = ! empty( $input['hostname'] ) ? (string) $input['hostname'] : 'extrachill.com';
+	$hostname          = isset( $input['hostname'] ) ? trim( (string) $input['hostname'] ) : '';
 	$cohort            = isset( $input['cohort'] ) ? (string) $input['cohort'] : 'resolved';
 	$min_views         = isset( $input['min_views'] ) ? max( 0, (int) $input['min_views'] ) : 0;
 	$sort_by           = isset( $input['sort_by'] ) ? (string) $input['sort_by'] : 'derived_rpm';
@@ -572,6 +572,7 @@ function extrachill_analytics_ability_get_content_revenue_pages( $input ) {
 		static function () use ( $rows, $hostname, $include_post_meta ) {
 			$records    = array();
 			$post_cache = array();
+			$hostname   = extrachill_analytics_revenue_resolution_hostname( $hostname );
 
 			foreach ( $rows as $row ) {
 				$post_id = (int) $row->post_id;
@@ -744,6 +745,30 @@ function extrachill_analytics_revenue_run_in_blog( $blog_id, $callback ) {
 	} finally {
 		extrachill_analytics_revenue_maybe_restore_blog( $switched );
 	}
+}
+
+/**
+ * Get the hostname used to resolve a relative Mediavine path.
+ *
+ * This runs inside the target blog context. An explicit hostname remains an
+ * operator override; otherwise the target blog's home URL supplies the host so
+ * paths from a cross-blog read never resolve against the caller's site.
+ *
+ * @param string $hostname Optional explicit hostname.
+ * @return string Hostname, including port when present.
+ */
+function extrachill_analytics_revenue_resolution_hostname( $hostname = '' ) {
+	$hostname = trim( (string) $hostname );
+	if ( '' !== $hostname ) {
+		return $hostname;
+	}
+
+	$home = wp_parse_url( home_url( '/' ) );
+	if ( empty( $home['host'] ) ) {
+		return '';
+	}
+
+	return $home['host'] . ( isset( $home['port'] ) ? ':' . $home['port'] : '' );
 }
 
 /**

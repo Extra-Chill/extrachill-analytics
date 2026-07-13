@@ -86,8 +86,8 @@ function extrachill_analytics_register_content_revenue_diagnostics_ability() {
 					),
 					'hostname'     => array(
 						'type'        => 'string',
-						'description' => __( 'Hostname for resolving any still-unresolved slugs to posts (default: extrachill.com).', 'extrachill-analytics' ),
-						'default'     => 'extrachill.com',
+						'description' => __( 'Optional hostname for resolving relative slugs to posts. Empty = the target blog hostname.', 'extrachill-analytics' ),
+						'default'     => '',
 					),
 				),
 			),
@@ -325,7 +325,7 @@ function extrachill_analytics_ability_get_content_revenue_diagnostics( $input ) 
 	$period_end   = isset( $input['period_end'] ) ? (string) $input['period_end'] : '';
 	$import_batch = isset( $input['import_batch'] ) ? (string) $input['import_batch'] : '';
 	$blog_id      = ! empty( $input['blog_id'] ) ? (int) $input['blog_id'] : get_current_blog_id();
-	$hostname     = ! empty( $input['hostname'] ) ? (string) $input['hostname'] : 'extrachill.com';
+	$hostname     = isset( $input['hostname'] ) ? trim( (string) $input['hostname'] ) : '';
 
 	$scope_args = array(
 		'blog_id'      => $blog_id,
@@ -389,6 +389,7 @@ function extrachill_analytics_ability_get_content_revenue_diagnostics( $input ) 
 		$blog_id,
 		static function () use ( $rows, $hostname ) {
 			$normalized = array();
+			$hostname   = extrachill_analytics_revenue_resolution_hostname( $hostname );
 			foreach ( $rows as $row ) {
 				$post_id = (int) $row->post_id;
 				if ( $post_id <= 0 && '' !== $row->slug ) {

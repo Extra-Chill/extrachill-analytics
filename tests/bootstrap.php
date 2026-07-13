@@ -141,6 +141,81 @@ if ( ! function_exists( 'update_site_option' ) ) {
 		return true;
 	}
 }
+if ( ! function_exists( 'get_current_blog_id' ) ) {
+	/**
+	 * Return the current blog fixture ID.
+	 *
+	 * @return int Blog ID.
+	 */
+	function get_current_blog_id() {
+		return isset( $GLOBALS['extrachill_analytics_test_blog_id'] ) ? (int) $GLOBALS['extrachill_analytics_test_blog_id'] : 1;
+	}
+}
+if ( ! function_exists( 'switch_to_blog' ) ) {
+	/**
+	 * Switch the current blog fixture ID.
+	 *
+	 * @param int $blog_id Target blog ID.
+	 * @return bool Always true.
+	 */
+	function switch_to_blog( $blog_id ) {
+		$GLOBALS['extrachill_analytics_test_blog_stack'][] = get_current_blog_id();
+		$GLOBALS['extrachill_analytics_test_blog_id']      = (int) $blog_id;
+		return true;
+	}
+}
+if ( ! function_exists( 'restore_current_blog' ) ) {
+	/**
+	 * Restore the prior blog fixture ID.
+	 *
+	 * @return bool True when a prior blog was restored.
+	 */
+	function restore_current_blog() {
+		if ( empty( $GLOBALS['extrachill_analytics_test_blog_stack'] ) ) {
+			return false;
+		}
+		$GLOBALS['extrachill_analytics_test_blog_id'] = array_pop( $GLOBALS['extrachill_analytics_test_blog_stack'] );
+		return true;
+	}
+}
+if ( ! function_exists( 'home_url' ) ) {
+	/**
+	 * Return the configured home URL for the current blog fixture.
+	 *
+	 * @param string $path Optional path.
+	 * @return string Home URL.
+	 */
+	function home_url( $path = '' ) {
+		$blog_id = get_current_blog_id();
+		$homes   = isset( $GLOBALS['extrachill_analytics_test_home_urls'] ) ? $GLOBALS['extrachill_analytics_test_home_urls'] : array();
+		$home    = isset( $homes[ $blog_id ] ) ? $homes[ $blog_id ] : 'https://extrachill.com';
+		return rtrim( $home, '/' ) . '/' . ltrim( $path, '/' );
+	}
+}
+if ( ! function_exists( 'wp_parse_url' ) ) {
+	/**
+	 * Stub for wp_parse_url().
+	 *
+	 * @param string $url URL to parse.
+	 * @return array|false Parsed URL components.
+	 */
+	function wp_parse_url( $url ) {
+		return parse_url( $url ); // phpcs:ignore WordPress.WP.AlternativeFunctions.parse_url_parse_url
+	}
+}
+if ( ! function_exists( 'url_to_postid' ) ) {
+	/**
+	 * Capture resolver URLs and return configured fixture IDs.
+	 *
+	 * @param string $url URL to resolve.
+	 * @return int Configured post ID, or zero.
+	 */
+	function url_to_postid( $url ) {
+		$GLOBALS['extrachill_analytics_test_resolved_urls'][] = $url;
+		$posts = isset( $GLOBALS['extrachill_analytics_test_url_post_ids'] ) ? $GLOBALS['extrachill_analytics_test_url_post_ids'] : array();
+		return isset( $posts[ $url ] ) ? (int) $posts[ $url ] : 0;
+	}
+}
 
 require_once dirname( __DIR__ ) . '/inc/core/php-error-log.php';
 require_once dirname( __DIR__ ) . '/inc/core/abilities/get-php-error-summary.php';

@@ -12,6 +12,7 @@
 use PHPUnit\Framework\TestCase;
 
 require_once dirname( __DIR__ ) . '/inc/core/abilities/get-content-revenue-pages.php';
+require_once dirname( __DIR__ ) . '/inc/core/content-format-classifier.php';
 
 /**
  * Verify page-level analysis contracts.
@@ -310,6 +311,39 @@ final class GetContentRevenuePagesTest extends TestCase {
 		$this->assertSame( '2026-06', $scope['effective_period'] );
 		$this->assertSame( 'newest-june', $scope['effective_batch'] );
 		$this->assertTrue( $scope['defaulted'] );
+	}
+
+	/**
+	 * A relative path inherits the authorized target blog's hostname, and the
+	 * run-in-blog wrapper restores the original site afterwards.
+	 */
+	public function test_relative_path_uses_target_blog_hostname_and_restores_context(): void {
+		$GLOBALS['extrachill_analytics_test_blog_id']       = 1;
+		$GLOBALS['extrachill_analytics_test_blog_stack']    = array();
+		$GLOBALS['extrachill_analytics_test_home_urls']     = array(
+			1 => 'https://extrachill.com',
+			7 => 'https://events.extrachill.com',
+		);
+		$GLOBALS['extrachill_analytics_test_resolved_urls'] = array();
+		$GLOBALS['extrachill_analytics_test_url_post_ids']  = array(
+			'https://events.extrachill.com/target-show/' => 77,
+		);
+
+		$post_id = extrachill_analytics_revenue_run_in_blog(
+			7,
+			static function () {
+				return extrachill_analytics_revenue_resolve_post_id(
+					'/target-show/',
+					extrachill_analytics_revenue_resolution_hostname()
+				);
+			}
+		);
+
+		$this->assertSame( 77, $post_id );
+		$this->assertSame( array( 'https://events.extrachill.com/target-show/' ), $GLOBALS['extrachill_analytics_test_resolved_urls'] );
+		$this->assertSame( 1, get_current_blog_id() );
+		$this->assertSame( array(), $GLOBALS['extrachill_analytics_test_blog_stack'] );
+		$this->assertSame( 'override.example.com', extrachill_analytics_revenue_resolution_hostname( 'override.example.com' ) );
 	}
 
 	/**
