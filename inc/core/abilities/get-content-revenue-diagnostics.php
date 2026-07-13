@@ -260,7 +260,13 @@ function extrachill_analytics_revenue_diagnostic_totals_schema() {
 		),
 		'period_labels'       => array( 'type' => 'integer' ),
 		'duplicate_labels'    => array( 'type' => 'integer' ),
-		'duplicates'          => array( 'type' => 'object' ),
+		'duplicates'          => array(
+			'type'                 => 'object',
+			'additionalProperties' => array(
+				'type'  => 'array',
+				'items' => array( 'type' => 'string' ),
+			),
+		),
 		'row_sum'             => $aggregate,
 		'independent'         => $aggregate,
 		'reconciled'          => array( 'type' => 'boolean' ),
@@ -278,10 +284,16 @@ function extrachill_analytics_revenue_diagnostic_totals_schema() {
 		'resolved_views'      => array( 'type' => 'integer' ),
 		'unresolved_views'    => array( 'type' => 'integer' ),
 		'unresolved_ratio'    => array( 'type' => 'number' ),
-		'by_route_family'     => array( 'type' => 'object' ),
+		'by_route_family'     => array(
+			'type'                 => 'object',
+			'additionalProperties' => array( 'type' => 'integer' ),
+		),
 		'uncategorized_pages' => array( 'type' => 'integer' ),
 		'uncategorized_ratio' => array( 'type' => 'number' ),
-		'by_format'           => array( 'type' => 'object' ),
+		'by_format'           => array(
+			'type'                 => 'object',
+			'additionalProperties' => array( 'type' => 'integer' ),
+		),
 		'revenue'             => array( 'type' => 'number' ),
 		'samples'             => array(
 			'type'  => 'array',

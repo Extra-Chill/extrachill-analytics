@@ -207,6 +207,7 @@ function extrachill_analytics_revenue_upsert( array $row ) {
  *
  *     @type int    $blog_id      Blog ID (default: current blog).
  *     @type string $import_batch Restrict to one import batch (default: '' = any).
+ *     @type bool   $restrict_import_batch Match import_batch exactly, including an empty legacy batch.
  *     @type string $period_label Restrict to one time bucket, e.g. "2026-05" or "all-time" (default: '' = any).
  *     @type string $period_start Inclusive window start (Y-m-d), or '' for any.
  *     @type string $period_end   Inclusive window end (Y-m-d), or '' for any.
@@ -243,16 +244,17 @@ function extrachill_analytics_revenue_get_rows( array $args = array() ) {
  * @return array{0:string,1:array<int,mixed>} Tuple of (WHERE clause, values).
  */
 function extrachill_analytics_revenue_build_scope_clause( array $args = array() ) {
-	$blog_id      = isset( $args['blog_id'] ) ? (int) $args['blog_id'] : get_current_blog_id();
-	$import_batch = isset( $args['import_batch'] ) ? (string) $args['import_batch'] : '';
-	$period_label = isset( $args['period_label'] ) ? (string) $args['period_label'] : '';
-	$period_start = isset( $args['period_start'] ) ? (string) $args['period_start'] : '';
-	$period_end   = isset( $args['period_end'] ) ? (string) $args['period_end'] : '';
+	$blog_id        = isset( $args['blog_id'] ) ? (int) $args['blog_id'] : get_current_blog_id();
+	$import_batch   = isset( $args['import_batch'] ) ? (string) $args['import_batch'] : '';
+	$period_label   = isset( $args['period_label'] ) ? (string) $args['period_label'] : '';
+	$period_start   = isset( $args['period_start'] ) ? (string) $args['period_start'] : '';
+	$period_end     = isset( $args['period_end'] ) ? (string) $args['period_end'] : '';
+	$restrict_batch = ! empty( $args['restrict_import_batch'] );
 
 	$where  = array( 'blog_id = %d' );
 	$values = array( $blog_id );
 
-	if ( '' !== $import_batch ) {
+	if ( '' !== $import_batch || $restrict_batch ) {
 		$where[]  = 'import_batch = %s';
 		$values[] = $import_batch;
 	}

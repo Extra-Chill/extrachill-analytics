@@ -297,9 +297,8 @@ function extrachill_analytics_register_content_revenue_pages_ability() {
 									'description' => 'derived_rpm / cohort_median_rpm, or null when benchmark not computed.',
 								),
 							),
-							'required'   => array( 'page_key', 'cohort', 'post_id', 'views', 'revenue', 'derived_rpm', 'source_rpm', 'zero_views', 'benchmark_opportunity' ),
+							'required'   => array( 'page_key', 'cohort', 'post_id', 'title', 'url', 'path', 'categories', 'format', 'route_family', 'published_date', 'views', 'revenue', 'derived_rpm', 'source_rpm', 'cpm', 'viewability', 'fill_rate', 'impressions_per_pageview', 'dollars_per_page', 'zero_views', 'benchmark_opportunity', 'benchmark_score' ),
 						),
-						'required'    => array( 'pages_before_limit', 'pages_returned', 'cohort_pages', 'zero_views_pages', 'views', 'revenue' ),
 					),
 					'totals'  => array(
 						'type'       => 'object',
@@ -318,7 +317,7 @@ function extrachill_analytics_register_content_revenue_pages_ability() {
 							),
 							'zero_views_pages'   => array(
 								'type'        => 'integer',
-								'description' => 'Pages in the returned cohort with zero views.',
+								'description' => 'Pages in the full filtered cohort with zero views.',
 							),
 							'views'              => array(
 								'type'        => 'integer',
@@ -329,7 +328,7 @@ function extrachill_analytics_register_content_revenue_pages_ability() {
 								'description' => 'Sum of revenue across the full cohort (before limit).',
 							),
 						),
-						'required'   => array( 'rows_in_window', 'resolved_pages', 'unresolved_pages', 'after_min_views', 'truncated', 'benchmark_computed', 'sufficient_for_benchmark' ),
+						'required'   => array( 'pages_before_limit', 'pages_returned', 'cohort_pages', 'zero_views_pages', 'views', 'revenue' ),
 					),
 					'sample'  => array(
 						'type'       => 'object',
@@ -363,6 +362,7 @@ function extrachill_analytics_register_content_revenue_pages_ability() {
 								'description' => 'Whether the cohort met the benchmark sample floor.',
 							),
 						),
+						'required'   => array( 'rows_in_window', 'resolved_pages', 'unresolved_pages', 'after_min_views', 'truncated', 'benchmark_computed', 'sufficient_for_benchmark' ),
 					),
 					'caveat'  => array(
 						'type'        => 'string',
@@ -501,11 +501,12 @@ function extrachill_analytics_ability_get_content_revenue_pages( $input ) {
 
 	$rows = extrachill_analytics_revenue_get_rows(
 		array(
-			'blog_id'      => $blog_id,
-			'import_batch' => $effective_batch,
-			'period_label' => $effective_period,
-			'period_start' => $period_start,
-			'period_end'   => $period_end,
+			'blog_id'               => $blog_id,
+			'import_batch'          => $effective_batch,
+			'restrict_import_batch' => $defaulted,
+			'period_label'          => $effective_period,
+			'period_start'          => $period_start,
+			'period_end'            => $period_end,
 		)
 	);
 
@@ -686,6 +687,10 @@ function extrachill_analytics_ability_get_content_revenue_pages( $input ) {
  * @return true|string True when authorized, or an error message string.
  */
 function extrachill_analytics_revenue_authorize_blog_read( $blog_id ) {
+	if ( (int) $blog_id <= 0 || ( function_exists( 'get_site' ) && ! get_site( $blog_id ) ) ) {
+		return __( 'Permission denied: target blog does not exist.', 'extrachill-analytics' );
+	}
+
 	if ( defined( 'WP_CLI' ) && WP_CLI ) {
 		return true;
 	}
