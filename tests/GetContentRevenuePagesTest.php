@@ -82,6 +82,52 @@ final class GetContentRevenuePagesTest extends TestCase {
 	}
 
 	/**
+	 * Equal numeric post IDs from distinct owning sites remain distinct pages.
+	 */
+	public function test_owning_site_identity_prevents_page_collisions(): void {
+		$records = array(
+			$this->content(
+				array(
+					'page_key'        => 'p1:71',
+					'content_blog_id' => 1,
+					'post_id'         => 71,
+					'title'           => 'Main',
+					'format'          => 'song-meaning',
+				)
+			),
+			$this->content(
+				array(
+					'page_key'        => 'p7:71',
+					'content_blog_id' => 7,
+					'post_id'         => 71,
+					'title'           => 'Event',
+					'format'          => 'events',
+				)
+			),
+			$this->content(
+				array(
+					'page_key'        => 'p11:71',
+					'content_blog_id' => 11,
+					'post_id'         => 71,
+					'title'           => 'Wire',
+					'format'          => 'news',
+				)
+			),
+		);
+		$built   = extrachill_analytics_revenue_build_pages(
+			$records,
+			array(
+				'cohort' => 'resolved',
+				'limit'  => 0,
+			)
+		);
+
+		$this->assertSame( 3, $built['totals']['pages_before_limit'] );
+		$this->assertSame( array( 11, 1, 7 ), array_column( $built['pages'], 'content_blog_id' ) );
+		$this->assertSame( array( 'p11:71', 'p1:71', 'p7:71' ), array_column( $built['pages'], 'page_key' ) );
+	}
+
+	/**
 	 * Derived RPM = revenue / (views/1000), distinct from source_rpm.
 	 */
 	public function test_derived_rpm_distinct_from_source_rpm(): void {

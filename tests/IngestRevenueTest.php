@@ -375,6 +375,78 @@ final class IngestRevenueTest extends TestCase {
 	}
 
 	/**
+	 * Events and Wire candidates retain their authoritative identity on a
+	 * deterministic re-ingest without changing source metrics or totals.
+	 */
+	public function test_network_events_and_wire_attribution_is_idempotent(): void {
+		$GLOBALS['extrachill_network_resolver_results'] = array(
+			'/events/show/'         => array(
+				'path'      => '/events/show/',
+				'status'    => 'resolved',
+				'candidate' => array(
+					'blog_id'       => 7,
+					'post_id'       => 71,
+					'canonical_url' => 'https://events.extrachill.com/events/show/',
+				),
+			),
+			'/festival-wire/story/' => array(
+				'path'      => '/festival-wire/story/',
+				'status'    => 'resolved',
+				'candidate' => array(
+					'blog_id'       => 11,
+					'post_id'       => 71,
+					'canonical_url' => 'https://wire.extrachill.com/festival-wire/story/',
+				),
+			),
+		);
+		$rows   = array(
+			array(
+				'slug'    => '/events/show/',
+				'views'   => 100,
+				'revenue' => 2.5,
+			),
+			array(
+				'slug'    => '/festival-wire/story/',
+				'views'   => 40,
+				'revenue' => 1.0,
+			),
+		);
+		$first  = $this->ingest( $rows, array( 'period' => '2026-06' ) );
+		$stored = $this->store_records( '2026-06' );
+		$second = $this->ingest( $rows, array( 'period' => '2026-06' ) );
+
+		$this->assertTrue( $first['success'] );
+		$this->assertTrue( $second['success'] );
+		$this->assertSame( 2, $second['replaced'] );
+		$this->assertSame( array( 7, 11 ), array_column( $stored, 'content_blog_id' ) );
+		$this->assertSame( array( 71, 71 ), array_column( $stored, 'post_id' ) );
+		$this->assertSame( array( 140, 3.5 ), array_values( $this->store_totals( '2026-06' ) ) );
+	}
+
+	/**
+	 * Ambiguous and unresolved Network evidence never selects a candidate.
+	 */
+	public function test_ambiguous_and_unresolved_network_rows_remain_unowned(): void {
+		$GLOBALS['extrachill_network_resolver_results'] = array(
+			'/events/ambiguous/' => array(
+				'path'       => '/events/ambiguous/',
+				'status'     => 'ambiguous',
+				'candidates' => array(),
+			),
+			'/events/missing/'   => array(
+				'path'   => '/events/missing/',
+				'status' => 'unresolved',
+			),
+		);
+		$result = $this->ingest( array( array( 'slug' => '/events/ambiguous/' ), array( 'slug' => '/events/missing/' ) ), array( 'period' => '2026-06' ) );
+		$this->assertTrue( $result['success'] );
+		foreach ( $this->store_records( '2026-06' ) as $row ) {
+			$this->assertEmpty( $row['post_id'] );
+			$this->assertEmpty( $row['content_blog_id'] );
+		}
+	}
+
+	/**
 	 * Replace mode removes rows that disappeared from the refreshed source.
 	 */
 	public function test_replace_removes_stale_rows_that_disappeared(): void {

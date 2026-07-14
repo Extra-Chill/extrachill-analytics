@@ -52,6 +52,49 @@ final class GetContentRevenueDiagnosticsTest extends TestCase {
 	}
 
 	/**
+	 * Diagnostics count equal post IDs independently for each owning blog.
+	 */
+	public function test_owning_site_identity_prevents_diagnostic_collisions(): void {
+		$rows           = array(
+			$this->row(
+				array(
+					'content_blog_id' => 1,
+					'post_id'         => 71,
+					'format'          => 'song-meaning',
+				)
+			),
+			$this->row(
+				array(
+					'content_blog_id' => 7,
+					'post_id'         => 71,
+					'format'          => 'events',
+				)
+			),
+			$this->row(
+				array(
+					'content_blog_id' => 11,
+					'post_id'         => 71,
+					'format'          => 'news',
+				)
+			),
+		);
+		$reconciliation = extrachill_analytics_revenue_diag_content_unresolved_reconciliation( $rows );
+		$resolution     = extrachill_analytics_revenue_diag_resolution_coverage( $rows );
+		$format         = extrachill_analytics_revenue_diag_format_coverage( $rows );
+
+		$this->assertSame( 3, $reconciliation['totals']['resolved_pages'] );
+		$this->assertSame( 3, $resolution['totals']['resolved_pages'] );
+		$this->assertSame(
+			array(
+				'song-meaning' => 1,
+				'events'       => 1,
+				'news'         => 1,
+			),
+			$format['totals']['by_format']
+		);
+	}
+
+	/**
 	 * Helper: a period-batch aggregate.
 	 *
 	 * @param array $over Overrides.
