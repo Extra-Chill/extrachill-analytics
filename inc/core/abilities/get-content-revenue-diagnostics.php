@@ -303,6 +303,11 @@ function extrachill_analytics_revenue_diagnostic_totals_schema() {
 		'ratio'               => array( 'type' => 'number' ),
 		'checked'             => array( 'type' => 'integer' ),
 		'high_variance'       => array( 'type' => 'integer' ),
+		'high_rate_rows'      => array( 'type' => 'integer' ),
+		'high_rate_samples'   => array(
+			'type'  => 'array',
+			'items' => $sample,
+		),
 		'missing_batch'       => array( 'type' => 'integer' ),
 		'missing_period'      => array( 'type' => 'integer' ),
 	);
@@ -1177,6 +1182,7 @@ function extrachill_analytics_revenue_diag_views_zero_revenue( array $rows ) {
  */
 function extrachill_analytics_revenue_diag_negative_impossible_values( array $rows ) {
 	$bad               = array();
+	$high_rate_rows    = 0;
 	$high_rate_samples = array();
 	$samples           = array();
 
@@ -1219,6 +1225,9 @@ function extrachill_analytics_revenue_diag_negative_impossible_values( array $ro
 		if ( $rpm < 0 ) {
 			$issues[] = "negative source rpm ({$rpm})";
 		}
+		if ( $derived_rpm < 0 ) {
+			$issues[] = "negative derived rpm ({$derived_rpm})";
+		}
 		if ( $cpm < 0 ) {
 			$issues[] = "negative cpm ({$cpm})";
 		}
@@ -1251,15 +1260,18 @@ function extrachill_analytics_revenue_diag_negative_impossible_values( array $ro
 				);
 			}
 		}
-		if ( ! empty( $high_rates ) && count( $high_rate_samples ) < 5 ) {
-			$high_rate_samples[] = array(
-				'slug'   => $slug,
-				'issues' => $high_rates,
-			);
+		if ( ! empty( $high_rates ) ) {
+			++$high_rate_rows;
+			if ( count( $high_rate_samples ) < 5 ) {
+				$high_rate_samples[] = array(
+					'slug'   => $slug,
+					'issues' => $high_rates,
+				);
+			}
 		}
 	}
 
-	$status   = ! empty( $bad ) ? 'fail' : ( ! empty( $high_rate_samples ) ? 'warning' : 'pass' );
+	$status   = ! empty( $bad ) ? 'fail' : ( $high_rate_rows > 0 ? 'warning' : 'pass' );
 	$evidence = array();
 	if ( ! empty( $bad ) ) {
 		$evidence[] = count( $bad ) . ' row(s) with negative or impossible values:';
@@ -1268,14 +1280,14 @@ function extrachill_analytics_revenue_diag_negative_impossible_values( array $ro
 		}
 		$evidence[] = 'Negative/out-of-range values are genuine integrity violations — investigate the import source.';
 	}
-	if ( ! empty( $high_rate_samples ) ) {
-		$evidence[] = count( $high_rate_samples ) . ' sampled row(s) have unusually high rate values:';
+	if ( $high_rate_rows > 0 ) {
+		$evidence[] = $high_rate_rows . ' row(s) have unusually high rate values (up to 5 shown):';
 		foreach ( $high_rate_samples as $s ) {
 			$evidence[] = "  {$s['slug']}: " . implode( '; ', $s['issues'] );
 		}
-		$evidence[] = 'High rate values are warnings, not integrity failures: low pageview denominators can produce them legitimately.';
+		$evidence[] = 'High rate values are anomalies, not structurally impossible values; inspect source metrics and their denominators before treating them as corruption.';
 	}
-	if ( empty( $bad ) && empty( $high_rate_samples ) ) {
+	if ( empty( $bad ) && 0 === $high_rate_rows ) {
 		$evidence[] = 'No negative, non-finite, or out-of-range values detected (views/revenue/rpm/cpm >= 0; viewability/fill_rate in [0,100]; impressions/pageview in [0,1000]).';
 	}
 
@@ -1286,6 +1298,7 @@ function extrachill_analytics_revenue_diag_negative_impossible_values( array $ro
 		'totals'   => array(
 			'rows'              => count( $bad ),
 			'samples'           => $samples,
+			'high_rate_rows'    => $high_rate_rows,
 			'high_rate_samples' => $high_rate_samples,
 		),
 	);

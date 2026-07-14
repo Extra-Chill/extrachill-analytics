@@ -798,17 +798,19 @@ final class GetContentRevenueDiagnosticsTest extends TestCase {
 		$neg = $this->check( $built, 'negative_impossible_values' );
 		$this->assertSame( 'warning', $neg['status'] );
 		$this->assertSame( 0, $neg['totals']['rows'] );
+		$this->assertSame( 1, $neg['totals']['high_rate_rows'] );
 		$this->assertCount( 1, $neg['totals']['high_rate_samples'] );
 		$this->assertSame( 'warning', $built['overall_status'] );
 	}
 
 	/**
-	 * Negative impressions/pageview is flagged as impossible.
+	 * Negative derived RPM and impressions/pageview are flagged as impossible.
 	 */
 	public function test_additional_impossible_metrics_are_flagged(): void {
 		$rows = array(
 			$this->row(
 				array(
+					'derived_rpm'              => -1.0,
 					'impressions_per_pageview' => -1.0,
 				)
 			),
@@ -824,7 +826,40 @@ final class GetContentRevenueDiagnosticsTest extends TestCase {
 
 		$check = $this->check( $built, 'negative_impossible_values' );
 		$this->assertSame( 'fail', $check['status'] );
+		$this->assertStringContainsString( 'negative derived rpm', implode( ' ', $check['totals']['samples'][0]['issues'] ) );
 		$this->assertStringContainsString( 'impressions_per_pageview', implode( ' ', $check['totals']['samples'][0]['issues'] ) );
+	}
+
+	/**
+	 * High-rate totals count every anomaly while evidence remains bounded.
+	 */
+	public function test_high_rate_counts_are_complete_and_samples_are_bounded(): void {
+		$rows = array();
+		for ( $i = 0; $i < 6; ++$i ) {
+			$rows[] = $this->row(
+				array(
+					'slug'  => '/high-cpm-' . $i . '/',
+					'views' => 1000,
+					'cpm'   => 1001.0,
+				)
+			);
+		}
+
+		$check = $this->check(
+			extrachill_analytics_revenue_build_diagnostics(
+				array(
+					'periods'            => array( $this->period() ),
+					'rows'               => $rows,
+					'independent_totals' => $this->reconciling_totals( $rows ),
+				)
+			),
+			'negative_impossible_values'
+		);
+
+		$this->assertSame( 'warning', $check['status'] );
+		$this->assertSame( 6, $check['totals']['high_rate_rows'] );
+		$this->assertCount( 5, $check['totals']['high_rate_samples'] );
+		$this->assertStringContainsString( '6 row(s)', $check['evidence'][0] );
 	}
 
 	/**
