@@ -769,16 +769,20 @@ final class GetContentRevenueDiagnosticsTest extends TestCase {
 	}
 
 	/**
-	 * M7: impossibly high RPM (> 1000) is flagged.
+	 * High rates are warnings, not integrity failures: a low pageview denominator
+	 * can legitimately produce them.
 	 */
-	public function test_impossibly_high_rpm_is_flagged(): void {
+	public function test_high_rpm_on_low_volume_row_warns(): void {
 		$rows = array(
 			$this->row(
 				array(
 					'slug'           => '/bad-rpm/',
 					'post_id'        => 2,
 					'stored_post_id' => 2,
-					'source_rpm'     => 5000.0,
+					'views'          => 1,
+					'revenue'        => 1.16,
+					'source_rpm'     => 1163.3,
+					'derived_rpm'    => 1160.0,
 				)
 			),
 		);
@@ -792,18 +796,20 @@ final class GetContentRevenueDiagnosticsTest extends TestCase {
 		);
 
 		$neg = $this->check( $built, 'negative_impossible_values' );
-		$this->assertSame( 'fail', $neg['status'] );
+		$this->assertSame( 'warning', $neg['status'] );
+		$this->assertSame( 0, $neg['totals']['rows'] );
+		$this->assertCount( 1, $neg['totals']['high_rate_samples'] );
+		$this->assertSame( 'warning', $built['overall_status'] );
 	}
 
 	/**
-	 * Negative impressions/pageview and impossible derived RPM are flagged.
+	 * Negative impressions/pageview is flagged as impossible.
 	 */
 	public function test_additional_impossible_metrics_are_flagged(): void {
 		$rows = array(
 			$this->row(
 				array(
 					'impressions_per_pageview' => -1.0,
-					'derived_rpm'              => 1500.0,
 				)
 			),
 		);
@@ -818,7 +824,6 @@ final class GetContentRevenueDiagnosticsTest extends TestCase {
 
 		$check = $this->check( $built, 'negative_impossible_values' );
 		$this->assertSame( 'fail', $check['status'] );
-		$this->assertStringContainsString( 'derived rpm', implode( ' ', $check['totals']['samples'][0]['issues'] ) );
 		$this->assertStringContainsString( 'impressions_per_pageview', implode( ' ', $check['totals']['samples'][0]['issues'] ) );
 	}
 
