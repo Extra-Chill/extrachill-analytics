@@ -812,7 +812,7 @@ function extrachill_analytics_register_ingest_revenue_ability() {
 				'properties' => array(
 					'rows'         => array(
 						'type'        => 'array',
-						'description' => __( 'REQUIRED, non-empty. Normalized per-URL revenue rows. Each row carries a slug/url plus metrics (views, revenue, rpm, cpm, viewability, fill_rate, impressions_per_pageview) and an optional pre-resolved post_id. Duplicate slugs are deduped (last wins).', 'extrachill-analytics' ),
+						'description' => __( 'REQUIRED, non-empty. Normalized per-URL revenue rows. Each row carries a slug/url plus metrics (views, revenue, rpm, cpm, viewability, fill_rate, impressions_per_pageview) and an optional pre-resolved post_id. Rows sharing a normalized slug are deterministically aggregated into one canonical row with summed views/revenue and derived or weighted rates.', 'extrachill-analytics' ),
 						'minItems'    => 1,
 						'items'       => array(
 							'type'       => 'object',
