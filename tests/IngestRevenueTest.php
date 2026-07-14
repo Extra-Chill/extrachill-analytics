@@ -196,6 +196,15 @@ final class IngestRevenueTest extends TestCase {
 	 * The homepage remains an unresolved revenue row instead of being discarded.
 	 */
 	public function test_homepage_row_is_preserved_and_idempotent(): void {
+		$GLOBALS['extrachill_network_resolver_results']['/'] = array(
+			'path'      => '/',
+			'status'    => 'resolved',
+			'candidate' => array(
+				'blog_id'       => 7,
+				'post_id'       => 99,
+				'canonical_url' => 'https://events.extrachill.com/',
+			),
+		);
 		$rows = array(
 			array(
 				'slug'    => '/',
@@ -230,6 +239,7 @@ final class IngestRevenueTest extends TestCase {
 		$this->assertSame( '/', $home['url'] );
 		$this->assertSame( 0, $home['post_id'] );
 		$this->assertNull( $home['content_blog_id'] );
+		$this->assertNotContains( '/', array_merge( ...$GLOBALS['extrachill_network_resolver_calls'] ) );
 		$this->assertSame(
 			array(
 				'views'   => 7127,

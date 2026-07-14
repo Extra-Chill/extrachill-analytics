@@ -434,8 +434,12 @@ function extrachill_analytics_revenue_ingest_rows( array $input_rows, array $arg
 		if ( '' === trim( $raw_slug ) ) {
 			continue;
 		}
+		$is_home = '/' === extrachill_analytics_revenue_frontend_path( $raw_slug );
 
-		if ( isset( $input['post_id'] ) && (int) $input['post_id'] > 0 ) {
+		if ( $is_home ) {
+			$post_id = 0;
+			$slug    = '';
+		} elseif ( isset( $input['post_id'] ) && (int) $input['post_id'] > 0 ) {
 			$post_id = (int) $input['post_id'];
 			if ( function_exists( 'get_post' ) ) {
 				$post = get_post( $post_id );
@@ -449,7 +453,6 @@ function extrachill_analytics_revenue_ingest_rows( array $input_rows, array $arg
 			$slug         = $resolved_row['slug'];
 		}
 
-		$is_home = '/' === extrachill_analytics_revenue_frontend_path( $raw_slug );
 		if ( '' === $slug && ! $is_home ) {
 			continue;
 		}
@@ -489,7 +492,7 @@ function extrachill_analytics_revenue_ingest_rows( array $input_rows, array $arg
 	// replace any part of the existing snapshot.
 	$network_paths = array();
 	foreach ( $by_slug as $record ) {
-		if ( empty( $record['post_id'] ) ) {
+		if ( empty( $record['post_id'] ) && '' !== $record['slug'] ) {
 			$path = extrachill_analytics_revenue_frontend_path( $record['url'] );
 			if ( null !== $path ) {
 				$network_paths[ $path ] = true;
@@ -505,7 +508,7 @@ function extrachill_analytics_revenue_ingest_rows( array $input_rows, array $arg
 		);
 	}
 	foreach ( $by_slug as &$record ) {
-		if ( ! empty( $record['post_id'] ) ) {
+		if ( ! empty( $record['post_id'] ) || '' === $record['slug'] ) {
 			continue;
 		}
 		$path   = extrachill_analytics_revenue_frontend_path( $record['url'] );
