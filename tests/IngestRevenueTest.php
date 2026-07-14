@@ -295,6 +295,86 @@ final class IngestRevenueTest extends TestCase {
 	}
 
 	/**
+	 * Batch boundaries retain every distinct path and never repeat resolver work.
+	 */
+	public function test_network_path_batches_retain_all_paths(): void {
+		foreach ( array( 100, 101, 200, 201 ) as $count ) {
+			$paths = array();
+			for ( $i = 0; $i < $count; ++$i ) {
+				$paths[] = '/events/test-' . $i . '/';
+			}
+			$GLOBALS['extrachill_network_resolver_calls'] = array();
+			$result                                       = extrachill_analytics_revenue_resolve_network_paths( $paths );
+			$this->assertTrue( $result['success'] );
+			$this->assertCount( $count, $result['results'] );
+			$this->assertSame( $paths, array_keys( $result['results'] ) );
+			$expected_chunks = array_fill( 0, (int) floor( $count / 100 ), 100 );
+			if ( 0 !== $count % 100 ) {
+				$expected_chunks[] = $count % 100;
+			}
+			$this->assertSame( $expected_chunks, array_map( 'count', $GLOBALS['extrachill_network_resolver_calls'] ) );
+		}
+	}
+
+	/**
+	 * Resolved evidence accepts only typed positive IDs and absolute HTTP URLs.
+	 */
+	public function test_network_resolved_evidence_requires_strict_types(): void {
+		$path = '/events/show/';
+		foreach ( array( '7', 0, -1 ) as $blog_id ) {
+			$scan = array(
+				'scan'    => array( 'status' => 'complete' ),
+				'results' => array(
+					array(
+						'path'      => $path,
+						'status'    => 'resolved',
+						'candidate' => array(
+							'blog_id'       => $blog_id,
+							'post_id'       => 7,
+							'canonical_url' => 'https://events.extrachill.com/events/show/',
+						),
+					),
+				),
+			);
+			$this->assertFalse( extrachill_analytics_revenue_validate_network_scan( $scan, array( $path ) )['success'] );
+		}
+		foreach ( array( '7', 0, -1 ) as $post_id ) {
+			$scan = array(
+				'scan'    => array( 'status' => 'complete' ),
+				'results' => array(
+					array(
+						'path'      => $path,
+						'status'    => 'resolved',
+						'candidate' => array(
+							'blog_id'       => 7,
+							'post_id'       => $post_id,
+							'canonical_url' => 'https://events.extrachill.com/events/show/',
+						),
+					),
+				),
+			);
+			$this->assertFalse( extrachill_analytics_revenue_validate_network_scan( $scan, array( $path ) )['success'] );
+		}
+		foreach ( array( '/events/show/', 'ftp://events.extrachill.com/events/show/', 'not-a-url' ) as $url ) {
+			$scan = array(
+				'scan'    => array( 'status' => 'complete' ),
+				'results' => array(
+					array(
+						'path'      => $path,
+						'status'    => 'resolved',
+						'candidate' => array(
+							'blog_id'       => 7,
+							'post_id'       => 7,
+							'canonical_url' => $url,
+						),
+					),
+				),
+			);
+			$this->assertFalse( extrachill_analytics_revenue_validate_network_scan( $scan, array( $path ) )['success'] );
+		}
+	}
+
+	/**
 	 * Replace mode removes rows that disappeared from the refreshed source.
 	 */
 	public function test_replace_removes_stale_rows_that_disappeared(): void {

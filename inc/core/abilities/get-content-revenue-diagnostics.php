@@ -937,7 +937,7 @@ function extrachill_analytics_revenue_diag_resolution_coverage( array $rows ) {
 
 	foreach ( $rows as $r ) {
 		$key = ! empty( $r['is_content'] )
-			? 'p' . (int) $r['post_id']
+			? 'p' . (int) ( $r['content_blog_id'] ?? 0 ) . ':' . (int) $r['post_id']
 			: 'u' . md5( isset( $r['slug'] ) ? (string) $r['slug'] : '' );
 
 		if ( ! empty( $r['is_content'] ) ) {
@@ -1007,8 +1007,8 @@ function extrachill_analytics_revenue_diag_format_coverage( array $rows ) {
 		if ( empty( $r['is_content'] ) ) {
 			continue;
 		}
-		// Dedupe by post id — one vote per resolved page.
-		$key = 'p' . (int) $r['post_id'];
+		// Dedupe by owning content identity — one vote per resolved page.
+		$key = 'p' . (int) ( $r['content_blog_id'] ?? 0 ) . ':' . (int) $r['post_id'];
 		if ( isset( $by_format['_seen'][ $key ] ) ) {
 			continue;
 		}

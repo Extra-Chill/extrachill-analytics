@@ -62,8 +62,8 @@ function extrachill_analytics_revenue_resolve_network_paths( array $paths ) {
 	$results = array();
 	$chunk   = array();
 	$bytes   = 0;
-	foreach ( $paths as $path ) {
-		$path_bytes = strlen( $path );
+	foreach ( $paths as $requested_path ) {
+		$path_bytes = strlen( $requested_path );
 		if ( count( $chunk ) >= 100 || ( ! empty( $chunk ) && $bytes + $path_bytes > 64000 ) ) {
 			$validated = extrachill_analytics_revenue_validate_network_scan( ec_resolve_frontend_paths( $chunk ), $chunk );
 			if ( ! $validated['success'] ) {
@@ -73,13 +73,13 @@ function extrachill_analytics_revenue_resolve_network_paths( array $paths ) {
 					'error'   => $validated['error'],
 				);
 			}
-			foreach ( $validated['results'] as $path => $result ) {
-				$results[ $path ] = $result;
+			foreach ( $validated['results'] as $result_path => $result ) {
+				$results[ $result_path ] = $result;
 			}
 			$chunk = array();
 			$bytes = 0;
 		}
-		$chunk[] = $path;
+		$chunk[] = $requested_path;
 		$bytes  += $path_bytes;
 	}
 	if ( ! empty( $chunk ) ) {
@@ -91,8 +91,8 @@ function extrachill_analytics_revenue_resolve_network_paths( array $paths ) {
 				'error'   => $validated['error'],
 			);
 		}
-		foreach ( $validated['results'] as $path => $result ) {
-			$results[ $path ] = $result;
+		foreach ( $validated['results'] as $result_path => $result ) {
+			$results[ $result_path ] = $result;
 		}
 	}
 
@@ -128,7 +128,7 @@ function extrachill_analytics_revenue_validate_network_scan( $scan, array $paths
 				'error'   => 'The Network path resolver returned an invalid complete-scan result; snapshot replacement was aborted.',
 			);
 		}
-		if ( 'resolved' === $result['status'] && ( ! isset( $result['candidate'] ) || ! is_array( $result['candidate'] ) || empty( $result['candidate']['blog_id'] ) || empty( $result['candidate']['post_id'] ) || empty( $result['candidate']['canonical_url'] ) ) ) {
+		if ( 'resolved' === $result['status'] && ( ! isset( $result['candidate'] ) || ! is_array( $result['candidate'] ) || ! isset( $result['candidate']['blog_id'], $result['candidate']['post_id'], $result['candidate']['canonical_url'] ) || ! is_int( $result['candidate']['blog_id'] ) || $result['candidate']['blog_id'] <= 0 || ! is_int( $result['candidate']['post_id'] ) || $result['candidate']['post_id'] <= 0 || ! is_string( $result['candidate']['canonical_url'] ) || ! preg_match( '#^https?://#i', $result['candidate']['canonical_url'] ) || false === filter_var( $result['candidate']['canonical_url'], FILTER_VALIDATE_URL ) ) ) {
 			return array(
 				'success' => false,
 				'results' => array(),
