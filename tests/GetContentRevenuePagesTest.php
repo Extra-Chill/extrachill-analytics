@@ -743,15 +743,15 @@ final class GetContentRevenuePagesTest extends TestCase {
 
 	/**
 	 * Source-string contract: the callback publish-gates content, reuses the
-	 * shared resolver and classifiers, and delegates to the pure builder.
+	 * persisted attribution and classifiers, and delegates to the pure builder.
 	 */
 	public function test_callback_publish_gates_and_delegates(): void {
 		$source = $this->ability_source();
 
 		// Publish-status gate (same contract as the rollup).
 		$this->assertStringContainsString( "'publish' === get_post_status( \$post_id )", $source );
-		// Reuses the shared resolver — no parallel slug->post logic.
-		$this->assertStringContainsString( 'extrachill_analytics_revenue_resolve_post_id', $source );
+		// Read models consume persisted attribution; resolver fanout is ingestion-only.
+		$this->assertStringNotContainsString( 'extrachill_analytics_revenue_resolve_post_id', $source );
 		// Reuses the shared route-family classifier.
 		$this->assertStringContainsString( 'extrachill_analytics_revenue_classify_route_family', $source );
 		// Reuses the shared content-format classifier.

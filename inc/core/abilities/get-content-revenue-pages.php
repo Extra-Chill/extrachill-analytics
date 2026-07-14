@@ -575,10 +575,8 @@ function extrachill_analytics_ability_get_content_revenue_pages( $input ) {
 			$hostname   = extrachill_analytics_revenue_resolution_hostname( $hostname );
 
 			foreach ( $rows as $row ) {
+				// Attribution is persisted at ingestion; reports never perform resolver fanout.
 				$post_id = (int) $row->post_id;
-				if ( $post_id <= 0 && '' !== $row->slug ) {
-					$post_id = extrachill_analytics_revenue_resolve_post_id( $row->url ? $row->url : $row->slug, $hostname );
-				}
 
 				$is_content = $post_id > 0 && 'publish' === get_post_status( $post_id );
 

@@ -396,10 +396,8 @@ function extrachill_analytics_ability_get_content_revenue_diagnostics( $input ) 
 			$normalized = array();
 			$hostname   = extrachill_analytics_revenue_resolution_hostname( $hostname );
 			foreach ( $rows as $row ) {
-				$post_id = (int) $row->post_id;
-				if ( $post_id <= 0 && '' !== $row->slug ) {
-					$post_id = extrachill_analytics_revenue_resolve_post_id( $row->url ? $row->url : $row->slug, $hostname );
-				}
+				// Attribution is persisted at ingestion; diagnostics never resolve paths.
+				$post_id    = (int) $row->post_id;
 				$is_content = $post_id > 0 && 'publish' === get_post_status( $post_id );
 
 				$views   = (int) $row->views;

@@ -18,6 +18,7 @@ use PHPUnit\Framework\TestCase;
 require_once dirname( __DIR__ ) . '/inc/core/content-format-classifier.php';
 require_once dirname( __DIR__ ) . '/inc/database/mediavine-revenue-db.php';
 require_once dirname( __DIR__ ) . '/inc/core/mediavine-csv-import.php';
+require_once dirname( __DIR__ ) . '/inc/core/revenue-content-attribution.php';
 require_once dirname( __DIR__ ) . '/inc/core/abilities/ingest-revenue.php';
 require_once dirname( __DIR__ ) . '/inc/database/class-extrachill-analytics-revenue-store.php';
 require_once __DIR__ . '/class-fake-revenue-store.php';
@@ -40,7 +41,8 @@ final class IngestRevenueTest extends TestCase {
 	 */
 	protected function setUp(): void {
 		$this->store = new Fake_Revenue_Store();
-		unset( $GLOBALS['extrachill_ingest_url_map'], $GLOBALS['extrachill_ingest_post_map'], $GLOBALS['extrachill_ingest_capabilities'], $GLOBALS['extrachill_ingest_site_capabilities'] );
+		unset( $GLOBALS['extrachill_ingest_url_map'], $GLOBALS['extrachill_ingest_post_map'], $GLOBALS['extrachill_ingest_capabilities'], $GLOBALS['extrachill_ingest_site_capabilities'], $GLOBALS['extrachill_network_resolver_results'], $GLOBALS['extrachill_network_resolver_incomplete'] );
+		$GLOBALS['extrachill_network_resolver_calls'] = array();
 	}
 
 	/**
@@ -188,6 +190,69 @@ final class IngestRevenueTest extends TestCase {
 
 		$this->assertSame( $totals_after_first, $this->store_totals( '2026-05' ) );
 		$this->assertSame( $first['identity']['import_batch'], $second['identity']['import_batch'] );
+	}
+
+	/**
+	 * Path-only rows resolved by Network retain snapshot scope separately from
+	 * their authoritative content identity.
+	 */
+	public function test_network_resolved_rows_persist_content_ownership(): void {
+		$GLOBALS['extrachill_network_resolver_results'] = array(
+			'/events/show/' => array(
+				'path'      => '/events/show/',
+				'status'    => 'resolved',
+				'candidate' => array(
+					'blog_id'       => 7,
+					'post_id'       => 71,
+					'canonical_url' => 'https://events.extrachill.com/events/show/',
+				),
+			),
+		);
+
+		$result = $this->ingest(
+			array(
+				array(
+					'slug'    => '/events/show/',
+					'views'   => 100,
+					'revenue' => 2.5,
+				),
+			),
+			array( 'period' => '2026-06' )
+		);
+		$row    = reset( $this->store->rows );
+
+		$this->assertTrue( $result['success'] );
+		$this->assertSame( 1, $row['blog_id'], 'The snapshot scope remains the importing blog.' );
+		$this->assertSame( 7, $row['content_blog_id'] );
+		$this->assertSame( 71, $row['post_id'] );
+		$this->assertSame( 'https://events.extrachill.com/events/show/', $row['canonical_url'] );
+	}
+
+	/**
+	 * Incomplete network evidence aborts before the existing snapshot is read or
+	 * mutated, preserving deterministic replacement atomicity.
+	 */
+	public function test_incomplete_network_scan_aborts_before_snapshot_replacement(): void {
+		$this->ingest( $this->rows( array( 'existing' => 10.0 ) ), array( 'period' => '2026-06' ) );
+		$before                     = $this->store->rows;
+		$this->store->operation_log = array();
+		$GLOBALS['extrachill_network_resolver_incomplete'] = true;
+
+		$result = $this->ingest(
+			array(
+				array(
+					'slug'    => '/festival-wire/story/',
+					'views'   => 20,
+					'revenue' => 4.0,
+				),
+			),
+			array( 'period' => '2026-06' )
+		);
+
+		$this->assertFalse( $result['success'] );
+		$this->assertFalse( $result['written'] );
+		$this->assertSame( $before, $this->store->rows );
+		$this->assertSame( array(), $this->store->operation_log );
 	}
 
 	/**
