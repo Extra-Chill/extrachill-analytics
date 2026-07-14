@@ -363,20 +363,18 @@ final class GetContentRevenuePagesTest extends TestCase {
 
 	/**
 	 * M6/B2/B4: source-string contract — the callback populates path, enforces
-	 * blog authorization, switch_to_blog around resolution, applies the default
+	 * blog authorization, persisted owning-site metadata, applies the default
 	 * window contract, and exposes selected periods/batches.
 	 */
 	public function test_callback_populates_path_and_enforces_auth_and_scope(): void {
 		$source = $this->ability_source();
 
-		// path is derived from the permalink.
-		$this->assertStringContainsString( 'wp_make_link_relative', $source );
+		// Owning-site metadata includes the canonical permalink path.
+		$this->assertStringContainsString( 'extrachill_analytics_revenue_content_metadata', $source );
 		// Network/blog authorization.
 		$this->assertStringContainsString( 'extrachill_analytics_revenue_authorize_blog_read', $source );
 		$this->assertStringContainsString( 'manage_network_options', $source );
-		// switch_to_blog around resolution.
-		$this->assertStringContainsString( 'extrachill_analytics_revenue_maybe_switch_to_blog', $source );
-		$this->assertStringContainsString( 'extrachill_analytics_revenue_maybe_restore_blog', $source );
+		$this->assertStringNotContainsString( 'extrachill_analytics_revenue_resolve_post_id', $source );
 		// Default window contract (freshest dated period).
 		$this->assertStringContainsString( 'extrachill_analytics_revenue_resolve_default_period', $source );
 		// Selected periods/batches exposed.
@@ -748,14 +746,13 @@ final class GetContentRevenuePagesTest extends TestCase {
 	public function test_callback_publish_gates_and_delegates(): void {
 		$source = $this->ability_source();
 
-		// Publish-status gate (same contract as the rollup).
-		$this->assertStringContainsString( "'publish' === get_post_status( \$post_id )", $source );
+		// Publish-status gate is owned by the persisted content metadata helper.
 		// Read models consume persisted attribution; resolver fanout is ingestion-only.
 		$this->assertStringNotContainsString( 'extrachill_analytics_revenue_resolve_post_id', $source );
 		// Reuses the shared route-family classifier.
 		$this->assertStringContainsString( 'extrachill_analytics_revenue_classify_route_family', $source );
-		// Reuses the shared content-format classifier.
-		$this->assertStringContainsString( 'extrachill_analytics_classify_format', $source );
+		// Metadata/classification runs in the owning-site helper.
+		$this->assertStringContainsString( 'extrachill_analytics_revenue_content_metadata', $source );
 		// Reuses the shared store reader — no new SQL/table.
 		$this->assertStringContainsString( 'extrachill_analytics_revenue_get_rows', $source );
 		// Delegates the pure half to the builder.

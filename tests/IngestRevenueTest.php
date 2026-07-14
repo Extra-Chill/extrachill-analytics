@@ -256,6 +256,45 @@ final class IngestRevenueTest extends TestCase {
 	}
 
 	/**
+	 * A nominally complete scan must be a strict one-result-per-path bijection.
+	 */
+	public function test_malformed_complete_network_scan_is_rejected(): void {
+		$paths = array( '/events/show/', '/festival-wire/story/' );
+		$valid = array(
+			'scan'    => array( 'status' => 'complete' ),
+			'results' => array(
+				array(
+					'path'   => '/events/show/',
+					'status' => 'unresolved',
+				),
+				array(
+					'path'   => '/events/show/',
+					'status' => 'unresolved',
+				),
+			),
+		);
+
+		$result = extrachill_analytics_revenue_validate_network_scan( $valid, $paths );
+		$this->assertFalse( $result['success'] );
+
+		$missing_candidate = array(
+			'scan'    => array( 'status' => 'complete' ),
+			'results' => array(
+				array(
+					'path'      => '/events/show/',
+					'status'    => 'resolved',
+					'candidate' => array(),
+				),
+				array(
+					'path'   => '/festival-wire/story/',
+					'status' => 'unresolved',
+				),
+			),
+		);
+		$this->assertFalse( extrachill_analytics_revenue_validate_network_scan( $missing_candidate, $paths )['success'] );
+	}
+
+	/**
 	 * Replace mode removes rows that disappeared from the refreshed source.
 	 */
 	public function test_replace_removes_stale_rows_that_disappeared(): void {

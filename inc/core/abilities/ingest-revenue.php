@@ -457,6 +457,7 @@ function extrachill_analytics_revenue_ingest_rows( array $input_rows, array $arg
 		if ( '' === $slug ) {
 			continue;
 		}
+		$canonical_url = $post_id > 0 && function_exists( 'get_permalink' ) ? (string) get_permalink( $post_id ) : '';
 
 		if ( isset( $by_slug[ $slug ] ) ) {
 			++$duplicates;
@@ -467,7 +468,7 @@ function extrachill_analytics_revenue_ingest_rows( array $input_rows, array $arg
 			'url'                      => $raw_slug,
 			'post_id'                  => $post_id,
 			'content_blog_id'          => $post_id > 0 ? $blog_id : null,
-			'canonical_url'            => '',
+			'canonical_url'            => $canonical_url,
 			'views'                    => isset( $input['views'] ) ? (int) $input['views'] : 0,
 			'revenue'                  => isset( $input['revenue'] ) ? (float) $input['revenue'] : 0.0,
 			'rpm'                      => isset( $input['rpm'] ) ? (float) $input['rpm'] : 0.0,

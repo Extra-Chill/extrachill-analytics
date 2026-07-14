@@ -1079,17 +1079,18 @@ final class GetContentRevenueDiagnosticsTest extends TestCase {
 
 	/**
 	 * B2/B1/M2: source-string contract — the callback enforces blog
-	 * authorization, switch_to_blog around resolution, queries the independent
+	 * authorization, persisted owning-site metadata, queries the independent
 	 * scope aggregate, and freshness uses the period boundary.
 	 */
-	public function test_callback_enforces_auth_switch_independent_and_boundary(): void {
+	public function test_callback_enforces_auth_identity_independent_and_boundary(): void {
 		$source = $this->ability_source();
 
 		// Authorization helper.
 		$this->assertStringContainsString( 'extrachill_analytics_revenue_authorize_blog_read', $source );
 		$this->assertStringContainsString( 'manage_network_options', $source );
-		// switch_to_blog around resolution.
-		$this->assertStringContainsString( 'extrachill_analytics_revenue_run_in_blog', $source );
+		// Persisted ownership supplies the site context; no resolver runs during reads.
+		$this->assertStringContainsString( 'extrachill_analytics_revenue_content_metadata', $source );
+		$this->assertStringNotContainsString( 'extrachill_analytics_revenue_resolve_post_id', $source );
 		// Independent SQL aggregate for reconciliation.
 		$this->assertStringContainsString( 'extrachill_analytics_revenue_get_scope_totals', $source );
 		$this->assertStringContainsString( "'independent_totals'", $source );
