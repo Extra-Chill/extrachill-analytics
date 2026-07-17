@@ -46,6 +46,11 @@ function extrachill_analytics_register_track_page_view_ability(): void {
 						'description' => __( 'Optional raw client-side referrer (document.referrer). Normalized server-side to a host-only `referrer_host` (no query strings, no PII) on the pageview event. Empty for direct traffic.', 'extrachill-analytics' ),
 						'default'     => '',
 					),
+					'proof'        => array(
+						'type'        => 'string',
+						'description' => __( 'Cache-safe proof binding the rendered host, path, route family, and post.', 'extrachill-analytics' ),
+						'maxLength'   => 64,
+					),
 				),
 				'anyOf'      => array(
 					array( 'required' => array( 'post_id' ) ),
@@ -89,13 +94,17 @@ function extrachill_analytics_ability_track_page_view( array $input ) {
 	$referrer     = isset( $input['referrer'] ) ? (string) $input['referrer'] : '';
 	$source_path  = isset( $input['source_path'] ) ? extrachill_analytics_normalize_route_path( $input['source_path'] ) : '';
 	$route_family = isset( $input['route_family'] ) ? sanitize_key( $input['route_family'] ) : '';
+	$proof        = isset( $input['proof'] ) ? (string) $input['proof'] : '';
 
 	// The deployed Extra Chill API adapter still calls this ability directly
-	// with post_id/referrer. Keep that valid while browser writes move to Core's
-	// Abilities REST runner and carry the complete route contract.
+	// with post_id/referrer. Derive its source path from the browser Referer; the
+	// integrity boundary admits it only when that path and mapped host match the
+	// public post. New direct Ability runner writes carry a signed proof.
 	if ( $post_id > 0 && '' === $source_path ) {
-		$permalink   = get_permalink( $post_id );
-		$source_path = is_string( $permalink ) ? extrachill_analytics_normalize_route_path( $permalink ) : '';
+		$browser_source = isset( $_SERVER['HTTP_REFERER'] )
+			? sanitize_text_field( wp_unslash( $_SERVER['HTTP_REFERER'] ) )
+			: '';
+		$source_path    = extrachill_analytics_normalize_route_path( $browser_source );
 	}
 	if ( $post_id > 0 && '' === $route_family ) {
 		$route_family = 'singular';
@@ -107,6 +116,11 @@ function extrachill_analytics_ability_track_page_view( array $input ) {
 			__( 'A normalized source_path and valid route_family are required.', 'extrachill-analytics' ),
 			array( 'status' => 400 )
 		);
+	}
+
+	$admission = extrachill_analytics_validate_pageview_write( $post_id, $source_path, $route_family, $proof );
+	if ( is_wp_error( $admission ) ) {
+		return $admission;
 	}
 
 	if ( $post_id > 0 && ! function_exists( 'ec_track_post_views' ) ) {
@@ -126,14 +140,6 @@ function extrachill_analytics_ability_track_page_view( array $input ) {
 	$visitor_id            = '';
 	$is_first_party_beacon = function_exists( 'extrachill_analytics_beacon_is_first_party' )
 		&& extrachill_analytics_beacon_is_first_party();
-	if ( $post_id <= 0 && ! $is_first_party_beacon ) {
-		return new \WP_Error(
-			'invalid_route_origin',
-			__( 'Route-level views must originate on the first-party network.', 'extrachill-analytics' ),
-			array( 'status' => 403 )
-		);
-	}
-
 	// Do not stitch a custom-domain request even if a browser permits its
 	// third-party cookie. Cross-site beacons have no durable first-party
 	// identity guarantee and intentionally remain anonymous.

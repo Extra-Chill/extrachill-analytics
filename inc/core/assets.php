@@ -415,6 +415,13 @@ function extrachill_analytics_enqueue_view_tracking() {
 	if ( '' === $source_path ) {
 		return;
 	}
+	$route_family = extrachill_analytics_classify_current_route( $source_path );
+	$request_host = isset( $_SERVER['HTTP_HOST'] )
+		? wp_parse_url( 'https://' . sanitize_text_field( wp_unslash( $_SERVER['HTTP_HOST'] ) ), PHP_URL_HOST )
+		: '';
+	if ( ! is_string( $request_host ) || '' === $request_host ) {
+		return;
+	}
 
 	$js_path = EXTRACHILL_ANALYTICS_PLUGIN_DIR . 'assets/js/view-tracking.js';
 	if ( ! file_exists( $js_path ) ) {
@@ -438,7 +445,8 @@ function extrachill_analytics_enqueue_view_tracking() {
 		array(
 			'postId'      => $post_id,
 			'sourcePath'  => $source_path,
-			'routeFamily' => extrachill_analytics_classify_current_route( $source_path ),
+			'routeFamily' => $route_family,
+			'proof'       => extrachill_analytics_pageview_proof( $post_id, $source_path, $route_family, $request_host ),
 			'endpoint'    => rest_url( 'wp-abilities/v1/abilities/extrachill/track-page-view/run' ),
 		)
 	);
