@@ -1,6 +1,6 @@
 <?php
 /**
- * Tests for conversion-map newsletter and registration outcome attribution.
+ * Tests for conversion-map concrete outcome attribution.
  *
  * @package ExtraChill\Analytics
  */
@@ -13,6 +13,22 @@ require_once dirname( __DIR__ ) . '/inc/core/abilities/get-conversion-map.php';
  * Protect outcome deduplication, attribution boundaries, and coverage semantics.
  */
 final class ConversionMapOutcomesTest extends TestCase {
+	/**
+	 * The outcome lens preserves concrete canonical lifecycle event names.
+	 */
+	public function test_outcome_types_include_proven_lifecycle_completions(): void {
+		$this->assertSame(
+			array(
+				'newsletter_signup',
+				'user_registration',
+				'onboarding_completed',
+				'artist_profile_first_publish',
+				'local_scene_prompt_completed',
+			),
+			extrachill_analytics_conversion_outcome_types()
+		);
+	}
+
 	/**
 	 * Registration deduplication uses the created user ID stored in event_data.
 	 */
@@ -119,5 +135,123 @@ final class ConversionMapOutcomesTest extends TestCase {
 		$this->assertSame( 'partial', $finalized['visitor_journey_status'] );
 		$this->assertSame( 2, $finalized['missing_source_url'] );
 		$this->assertSame( 1, $finalized['missing_visitor_identity'] );
+	}
+
+	/**
+	 * Identified lifecycle outcomes retain same/later-session attribution and dedupe.
+	 */
+	public function test_lifecycle_outcome_fixtures_preserve_identity_dedupe_and_order(): void {
+		$types    = array(
+			'onboarding_completed',
+			'artist_profile_first_publish',
+			'local_scene_prompt_completed',
+		);
+		$rows     = array(
+			$this->outcome_row( 1, 'local_scene_prompt_completed', 21, 'visitor-c', 900 ),
+			$this->outcome_row( 2, 'artist_profile_first_publish', 11, 'visitor-a', 1200 ),
+			$this->outcome_row( 3, 'local_scene_prompt_completed', 21, 'visitor-c', 1200 ),
+			$this->outcome_row( 4, 'artist_profile_first_publish', 11, 'visitor-a', 1300 ),
+			$this->outcome_row( 5, 'onboarding_completed', 31, '', 1400 ),
+			$this->outcome_row( 6, 'artist_profile_first_publish', 12, 'visitor-b', 3000 ),
+		);
+		$journeys = array(
+			'visitor-a' => array(
+				'post_id'              => 0,
+				'entry_ts'             => 1000,
+				'same_session_through' => 2000,
+			),
+			'visitor-b' => array(
+				'post_id'              => 0,
+				'entry_ts'             => 1000,
+				'same_session_through' => 2000,
+			),
+			'visitor-c' => array(
+				'post_id'              => 0,
+				'entry_ts'             => 1000,
+				'same_session_through' => 2000,
+			),
+		);
+
+		$overall     = extrachill_analytics_conversion_outcome_zero_bucket( $types );
+		$coverage    = array_fill_keys( $types, extrachill_analytics_conversion_outcome_zero_coverage() );
+		$by_article  = array();
+		$by_category = array();
+		$seen        = array();
+
+		extrachill_analytics_conversion_attribute_outcome_rows(
+			$rows,
+			1,
+			$journeys,
+			$overall,
+			$by_article,
+			$by_category,
+			$coverage,
+			$seen
+		);
+
+		$this->assertSame( 1, $overall['artist_profile_first_publish']['same_session'] );
+		$this->assertSame( 1, $overall['artist_profile_first_publish']['later_session'] );
+		$this->assertSame( 1, $coverage['artist_profile_first_publish']['duplicate_events'] );
+		$this->assertSame( 1, $coverage['onboarding_completed']['missing_visitor_identity'] );
+		$this->assertSame( 1, $coverage['local_scene_prompt_completed']['outcome_before_entry'] );
+		$this->assertSame( 1, $coverage['local_scene_prompt_completed']['duplicate_events'] );
+		$this->assertSame( 0, $overall['local_scene_prompt_completed']['same_session'] );
+	}
+
+	/**
+	 * An outcome with no stored instrumentation is not projected as measured zero.
+	 */
+	public function test_absent_lifecycle_instrumentation_projects_null_counts(): void {
+		$type        = 'onboarding_completed';
+		$coverage    = extrachill_analytics_conversion_finalize_outcome_coverage( extrachill_analytics_conversion_outcome_zero_coverage(), true );
+		$outcome_row = extrachill_analytics_conversion_outcome_row(
+			extrachill_analytics_conversion_outcome_zero_bucket( array( $type ) ),
+			array( $type => $coverage )
+		);
+
+		$this->assertSame( 'not_observed', $coverage['instrumentation_status'] );
+		$this->assertSame( 'not_instrumented', $outcome_row[ $type ]['direct_source']['coverage_status'] );
+		$this->assertNull( $outcome_row[ $type ]['direct_source']['count'] );
+		$this->assertNull( $outcome_row[ $type ]['visitor_journey']['same_session_count'] );
+		$this->assertNull( $outcome_row[ $type ]['visitor_journey']['later_session_count'] );
+	}
+
+	/**
+	 * Existing outcome zero semantics remain backward compatible.
+	 */
+	public function test_absent_established_outcome_remains_measured_zero(): void {
+		$type        = 'newsletter_signup';
+		$coverage    = extrachill_analytics_conversion_finalize_outcome_coverage( extrachill_analytics_conversion_outcome_zero_coverage() );
+		$outcome_row = extrachill_analytics_conversion_outcome_row(
+			extrachill_analytics_conversion_outcome_zero_bucket( array( $type ) ),
+			array( $type => $coverage )
+		);
+
+		$this->assertSame( 'measured', $outcome_row[ $type ]['direct_source']['coverage_status'] );
+		$this->assertSame( 0, $outcome_row[ $type ]['direct_source']['count'] );
+		$this->assertSame( 0, $outcome_row[ $type ]['visitor_journey']['same_session_count'] );
+		$this->assertSame( 0, $outcome_row[ $type ]['visitor_journey']['later_session_count'] );
+	}
+
+	/**
+	 * Build a stored outcome fixture.
+	 *
+	 * @param int    $id         Event row ID.
+	 * @param string $event_type Concrete outcome event name.
+	 * @param int    $user_id    Payload and stored user identity.
+	 * @param string $visitor_id Anonymous visitor identity.
+	 * @param int    $timestamp  Event timestamp.
+	 * @return object Outcome row.
+	 */
+	private function outcome_row( int $id, string $event_type, int $user_id, string $visitor_id, int $timestamp ): object {
+		return (object) array(
+			'id'         => $id,
+			'event_type' => $event_type,
+			'event_data' => wp_json_encode( array( 'user_id' => $user_id ) ),
+			'source_url' => '',
+			'user_id'    => $user_id,
+			'visitor_id' => $visitor_id,
+			'ts'         => $timestamp,
+		);
 	}
 }
