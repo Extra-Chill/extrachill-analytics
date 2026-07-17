@@ -52,10 +52,7 @@ function extrachill_analytics_register_track_page_view_ability(): void {
 						'maxLength'   => 64,
 					),
 				),
-				'anyOf'      => array(
-					array( 'required' => array( 'post_id' ) ),
-					array( 'required' => array( 'source_path', 'route_family' ) ),
-				),
+				'required'   => array( 'source_path', 'route_family', 'proof' ),
 			),
 			'output_schema'       => array(
 				'type'        => 'object',
@@ -95,20 +92,6 @@ function extrachill_analytics_ability_track_page_view( array $input ) {
 	$source_path  = isset( $input['source_path'] ) ? extrachill_analytics_normalize_route_path( $input['source_path'] ) : '';
 	$route_family = isset( $input['route_family'] ) ? sanitize_key( $input['route_family'] ) : '';
 	$proof        = isset( $input['proof'] ) ? (string) $input['proof'] : '';
-
-	// The deployed Extra Chill API adapter still calls this ability directly
-	// with post_id/referrer. Derive its source path from the browser Referer; the
-	// integrity boundary admits it only when that path and mapped host match the
-	// public post. New direct Ability runner writes carry a signed proof.
-	if ( $post_id > 0 && '' === $source_path ) {
-		$browser_source = isset( $_SERVER['HTTP_REFERER'] )
-			? sanitize_text_field( wp_unslash( $_SERVER['HTTP_REFERER'] ) )
-			: '';
-		$source_path    = extrachill_analytics_normalize_route_path( $browser_source );
-	}
-	if ( $post_id > 0 && '' === $route_family ) {
-		$route_family = 'singular';
-	}
 
 	if ( '' === $source_path || ! in_array( $route_family, extrachill_analytics_route_families(), true ) ) {
 		return new \WP_Error(

@@ -97,31 +97,50 @@ if ( ! function_exists( 'wp_salt' ) ) {
 		return 'test-salt-' . $scheme;
 	}
 }
-if ( ! function_exists( 'get_transient' ) ) {
+if ( ! function_exists( 'wp_using_ext_object_cache' ) ) {
 	/**
-	 * Read an in-memory transient fixture.
+	 * Return the persistent-cache fixture state.
 	 *
-	 * @param string $key Transient key.
-	 * @return mixed
+	 * @return bool
 	 */
-	function get_transient( $key ) {
-		return isset( $GLOBALS['extrachill_analytics_test_transients'][ $key ] )
-			? $GLOBALS['extrachill_analytics_test_transients'][ $key ]
-			: false;
+	function wp_using_ext_object_cache() {
+		return ! isset( $GLOBALS['extrachill_analytics_test_ext_object_cache'] )
+			|| (bool) $GLOBALS['extrachill_analytics_test_ext_object_cache'];
 	}
 }
-if ( ! function_exists( 'set_transient' ) ) {
+if ( ! function_exists( 'wp_cache_add' ) ) {
 	/**
-	 * Store an in-memory transient fixture.
+	 * Atomically add a cache fixture when absent.
 	 *
-	 * @param string $key        Transient key.
-	 * @param mixed  $value      Transient value.
+	 * @param string $key        Cache key.
+	 * @param mixed  $value      Cache value.
+	 * @param string $group      Cache group.
 	 * @param int    $expiration Expiration (unused in fixture).
 	 * @return bool
 	 */
-	function set_transient( $key, $value, $expiration ) { // phpcs:ignore Generic.CodeAnalysis.UnusedFunctionParameter.FoundAfterLastUsed
-		$GLOBALS['extrachill_analytics_test_transients'][ $key ] = $value;
+	function wp_cache_add( $key, $value, $group = '', $expiration = 0 ) { // phpcs:ignore Generic.CodeAnalysis.UnusedFunctionParameter.FoundAfterLastUsed
+		if ( isset( $GLOBALS['extrachill_analytics_test_cache'][ $group ][ $key ] ) ) {
+			return false;
+		}
+		$GLOBALS['extrachill_analytics_test_cache'][ $group ][ $key ] = $value;
 		return true;
+	}
+}
+if ( ! function_exists( 'wp_cache_incr' ) ) {
+	/**
+	 * Atomically increment an existing cache fixture.
+	 *
+	 * @param string $key    Cache key.
+	 * @param int    $offset Increment amount.
+	 * @param string $group  Cache group.
+	 * @return int|false
+	 */
+	function wp_cache_incr( $key, $offset = 1, $group = '' ) {
+		if ( ! isset( $GLOBALS['extrachill_analytics_test_cache'][ $group ][ $key ] ) ) {
+			return false;
+		}
+		$GLOBALS['extrachill_analytics_test_cache'][ $group ][ $key ] += (int) $offset;
+		return $GLOBALS['extrachill_analytics_test_cache'][ $group ][ $key ];
 	}
 }
 if ( ! function_exists( 'sanitize_key' ) ) {

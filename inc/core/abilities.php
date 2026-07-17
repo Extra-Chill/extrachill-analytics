@@ -124,7 +124,15 @@ function extrachill_analytics_ability_track_event( $input ) {
 		return 0;
 	}
 
-	$event_type = $input['event_type'];
+	$raw_event_type = (string) $input['event_type'];
+	$event_type     = sanitize_key( $raw_event_type );
+	if ( $raw_event_type !== $event_type ) {
+		return new WP_Error(
+			'invalid_event_type',
+			__( 'Event type must use its canonical lowercase identifier.', 'extrachill-analytics' ),
+			array( 'status' => 400 )
+		);
+	}
 	$event_data = isset( $input['event_data'] ) ? $input['event_data'] : array();
 	$source_url = isset( $input['source_url'] ) ? $input['source_url'] : '';
 	$visitor_id = isset( $input['visitor_id'] ) ? (string) $input['visitor_id'] : '';

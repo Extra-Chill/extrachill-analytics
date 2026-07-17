@@ -453,6 +453,10 @@ function extrachill_analytics_enqueue_view_tracking() {
 }
 add_action( 'wp_enqueue_scripts', 'extrachill_analytics_enqueue_view_tracking' );
 
+// Custom-domain link pages intentionally bypass wp_head(), so their existing
+// minimal-head lifecycle must enqueue the same signed Analytics-owned tracker.
+add_action( 'extrachill_artist_link_page_minimal_head', 'extrachill_analytics_enqueue_view_tracking', 20 );
+
 /**
  * Enqueue outbound-click tracking on every front-end view.
  *

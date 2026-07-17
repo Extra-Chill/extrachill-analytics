@@ -11,6 +11,7 @@ require_once dirname( __DIR__ ) . '/inc/core/route-classifier.php';
 require_once dirname( __DIR__ ) . '/inc/core/assets.php';
 require_once dirname( __DIR__ ) . '/inc/core/write-integrity.php';
 require_once dirname( __DIR__ ) . '/inc/core/abilities.php';
+require_once dirname( __DIR__ ) . '/inc/core/abilities/track-page-view.php';
 
 /**
  * Verify public writes carry consistent first-party evidence and stay bounded.
@@ -21,30 +22,35 @@ final class PublicWriteIntegrityTest extends TestCase {
 	 */
 	protected function setUp(): void {
 		$_SERVER['HTTP_ORIGIN'] = 'https://extrachill.com';
-		unset( $_SERVER['HTTP_REFERER'], $_SERVER['REMOTE_ADDR'], $_SERVER['HTTP_SEC_GPC'], $_SERVER['HTTP_DNT'] );
-		$GLOBALS['extrachill_analytics_test_blog_id']     = 1;
-		$GLOBALS['extrachill_analytics_test_home_urls']   = array( 1 => 'https://extrachill.com' );
-		$GLOBALS['extrachill_analytics_test_domain_map']  = array(
+		unset( $_SERVER['HTTP_REFERER'], $_SERVER['HTTP_SEC_GPC'], $_SERVER['HTTP_DNT'] );
+		$_SERVER['HTTP_USER_AGENT']                              = 'Mozilla/5.0';
+		$_SERVER['REMOTE_ADDR']                                  = '203.0.113.10';
+		$GLOBALS['extrachill_analytics_test_blog_id']            = 1;
+		$GLOBALS['extrachill_analytics_test_home_urls']          = array( 1 => 'https://extrachill.com' );
+		$GLOBALS['extrachill_analytics_test_domain_map']         = array(
 			'extrachill.com'  => 1,
 			'extrachill.link' => 4,
 		);
-		$GLOBALS['extrachill_analytics_test_blog_slugs']  = array(
+		$GLOBALS['extrachill_analytics_test_blog_slugs']         = array(
 			1 => 'main',
 			4 => 'artist',
 			7 => 'events',
 		);
-		$GLOBALS['extrachill_analytics_test_transients']  = array();
-		$GLOBALS['extrachill_analytics_test_events']      = array();
-		$GLOBALS['extrachill_analytics_classifier_posts'] = array();
-		$GLOBALS['extrachill_analytics_test_permalinks']  = array();
-		$_COOKIE['ec_vid']                                = '123e4567-e89b-42d3-a456-426614174000';
+		$GLOBALS['extrachill_analytics_test_cache']              = array();
+		$GLOBALS['extrachill_analytics_test_ext_object_cache']   = true;
+		$GLOBALS['extrachill_analytics_test_events']             = array();
+		$GLOBALS['extrachill_analytics_test_tracked_post_views'] = array();
+		$GLOBALS['extrachill_analytics_test_actions']            = array();
+		$GLOBALS['extrachill_analytics_classifier_posts']        = array();
+		$GLOBALS['extrachill_analytics_test_permalinks']         = array();
+		$_COOKIE['ec_vid']                                       = '123e4567-e89b-42d3-a456-426614174000';
 	}
 
 	/**
 	 * Restore request fixtures.
 	 */
 	protected function tearDown(): void {
-		unset( $_SERVER['HTTP_ORIGIN'], $_SERVER['HTTP_REFERER'], $_SERVER['REMOTE_ADDR'], $_SERVER['HTTP_SEC_GPC'], $_SERVER['HTTP_DNT'], $_COOKIE['ec_vid'] );
+		unset( $_SERVER['HTTP_ORIGIN'], $_SERVER['HTTP_REFERER'], $_SERVER['HTTP_USER_AGENT'], $_SERVER['REMOTE_ADDR'], $_SERVER['HTTP_SEC_GPC'], $_SERVER['HTTP_DNT'], $_COOKIE['ec_vid'] );
 	}
 
 	/**
@@ -60,26 +66,47 @@ final class PublicWriteIntegrityTest extends TestCase {
 		$GLOBALS['extrachill_analytics_classifier_posts'][42] = $post;
 		$proof = extrachill_analytics_pageview_proof( 42, '/band/', 'singular', 'extrachill.link' );
 
-		$this->assertTrue( extrachill_analytics_validate_pageview_write( 42, '/band/', 'singular', $proof ) );
+		$result = extrachill_analytics_ability_track_page_view(
+			array(
+				'post_id'      => 42,
+				'source_path'  => '/band/',
+				'route_family' => 'singular',
+				'proof'        => $proof,
+			)
+		);
+
+		$this->assertSame( array( 'recorded' => true ), $result );
+		$this->assertSame( array( 42 ), $GLOBALS['extrachill_analytics_test_tracked_post_views'] );
+		$this->assertSame( '', $GLOBALS['extrachill_analytics_test_events'][0][3] );
 	}
 
 	/**
-	 * The deployed custom-domain adapter remains valid without a signed proof.
+	 * The custom template lifecycle enqueues the signed tracker it persists.
 	 */
-	public function test_legacy_mapped_domain_view_requires_matching_public_post(): void {
+	public function test_custom_domain_template_uses_signed_tracker(): void {
+		// phpcs:ignore WordPress.WP.AlternativeFunctions.file_get_contents_file_get_contents -- Reading a local source fixture.
+		$assets = file_get_contents( dirname( __DIR__ ) . '/inc/core/assets.php' );
+
+		$this->assertNotFalse( $assets );
+		$this->assertStringContainsString(
+			"add_action( 'extrachill_artist_link_page_minimal_head', 'extrachill_analytics_enqueue_view_tracking', 20 )",
+			$assets
+		);
+	}
+
+	/**
+	 * The unreliable cross-origin legacy adapter is explicitly rejected.
+	 */
+	public function test_legacy_mapped_domain_view_without_source_proof_is_rejected(): void {
 		$GLOBALS['extrachill_analytics_test_blog_id']      = 4;
 		$GLOBALS['extrachill_analytics_test_home_urls'][4] = 'https://artist.extrachill.com';
 		$_SERVER['HTTP_ORIGIN']                            = 'https://extrachill.link';
-		$post            = new WP_Post();
-		$post->ID        = 42;
-		$post->post_name = 'band';
-		$GLOBALS['extrachill_analytics_classifier_posts'][42] = $post;
-		$GLOBALS['extrachill_analytics_test_permalinks'][42]  = 'https://artist.extrachill.com/artist-link-page/band/';
+		$_SERVER['HTTP_REFERER']                           = 'https://extrachill.link/';
 
-		$this->assertTrue( extrachill_analytics_validate_pageview_write( 42, '/band/', 'singular', '' ) );
-		$result = extrachill_analytics_validate_pageview_write( 42, '/another-band/', 'singular', '' );
+		$result = extrachill_analytics_ability_track_page_view( array( 'post_id' => 42 ) );
 		$this->assertInstanceOf( WP_Error::class, $result );
-		$this->assertSame( 'invalid_pageview_source', $result->code );
+		$this->assertSame( 'invalid_route', $result->code );
+		$this->assertSame( array(), $GLOBALS['extrachill_analytics_test_tracked_post_views'] );
 	}
 
 	/**
@@ -147,11 +174,16 @@ final class PublicWriteIntegrityTest extends TestCase {
 	}
 
 	/**
-	 * Public adapters cannot inject visitor identity, including under GPC.
+	 * Privacy signals stay anonymous and non-canonical protected names are rejected.
+	 *
+	 * @dataProvider privacy_header_provider
+	 *
+	 * @param string $header     Privacy header.
+	 * @param string $event_type Non-canonical protected event name.
 	 */
-	public function test_gpc_public_event_stays_anonymous(): void {
-		$_SERVER['HTTP_SEC_GPC'] = '1';
-		$result                  = extrachill_analytics_ability_track_event(
+	public function test_privacy_signal_and_noncanonical_event_admission( $header, $event_type ): void {
+		$_SERVER[ $header ] = '1';
+		$result             = extrachill_analytics_ability_track_event(
 			array(
 				'event_type' => 'outbound_click',
 				'event_data' => array( 'dest_host' => 'tickets.example' ),
@@ -162,6 +194,30 @@ final class PublicWriteIntegrityTest extends TestCase {
 
 		$this->assertSame( 1, $result );
 		$this->assertSame( '', $GLOBALS['extrachill_analytics_test_events'][0][3] );
+
+		$rejected = extrachill_analytics_ability_track_event(
+			array(
+				'event_type' => $event_type,
+				'event_data' => array( 'dest_host' => 'tickets.example' ),
+				'source_url' => '/story/',
+			)
+		);
+		$this->assertInstanceOf( WP_Error::class, $rejected );
+		$this->assertSame( 'invalid_event_type', $rejected->code );
+		$this->assertCount( 1, $GLOBALS['extrachill_analytics_test_events'] );
+	}
+
+	/**
+	 * Privacy headers.
+	 *
+	 * @return array<string,array{string,string}>
+	 */
+	public function privacy_header_provider() {
+		return array(
+			'gpc with uppercase event' => array( 'HTTP_SEC_GPC', 'OUTBOUND_CLICK' ),
+			'dnt with padded event'    => array( 'HTTP_DNT', ' outbound_click ' ),
+			'dnt with spaced event'    => array( 'HTTP_DNT', 'outbound click' ),
+		);
 	}
 
 	/**
@@ -178,14 +234,28 @@ final class PublicWriteIntegrityTest extends TestCase {
 	 * The Analytics-owned limiter rejects writes at its documented ceiling.
 	 */
 	public function test_public_write_rate_limit_is_bounded(): void {
-		$_SERVER['REMOTE_ADDR'] = '203.0.113.10';
-		$key                    = 'ec_an_write_' . substr( hash_hmac( 'sha256', '203.0.113.10', wp_salt( 'nonce' ) ), 0, 32 );
-		$GLOBALS['extrachill_analytics_test_transients'][ $key ] = 240;
+		$key   = 'write_' . substr( hash_hmac( 'sha256', '203.0.113.10', wp_salt( 'nonce' ) ), 0, 32 );
+		$group = 'extrachill-analytics-admission';
+		$GLOBALS['extrachill_analytics_test_cache'][ $group ][ $key ] = 240;
 
 		$result = extrachill_analytics_check_public_write_rate_limit();
 
 		$this->assertInstanceOf( WP_Error::class, $result );
 		$this->assertSame( 'analytics_write_rate_limited', $result->code );
 		$this->assertSame( 429, $result->data['status'] );
+		$this->assertSame( 241, $GLOBALS['extrachill_analytics_test_cache'][ $group ][ $key ] );
+	}
+
+	/**
+	 * Missing atomic storage fails closed instead of becoming unbounded.
+	 */
+	public function test_public_write_limiter_fails_closed_without_atomic_cache(): void {
+		$GLOBALS['extrachill_analytics_test_ext_object_cache'] = false;
+
+		$result = extrachill_analytics_check_public_write_rate_limit();
+
+		$this->assertInstanceOf( WP_Error::class, $result );
+		$this->assertSame( 'analytics_write_limiter_unavailable', $result->code );
+		$this->assertSame( 503, $result->data['status'] );
 	}
 }

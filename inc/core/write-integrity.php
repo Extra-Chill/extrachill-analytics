@@ -58,7 +58,7 @@ function extrachill_analytics_public_write_host_is_current_site( $host ) {
 }
 
 /**
- * Apply a fixed-window cap to public analytics writes.
+ * Apply an atomic fixed-window cap to public analytics writes.
  *
  * The cache key contains only a salted hash of the client IP. The raw address
  * is never persisted by this limiter.
@@ -67,26 +67,48 @@ function extrachill_analytics_public_write_host_is_current_site( $host ) {
  */
 function extrachill_analytics_check_public_write_rate_limit() {
 	$limit = (int) apply_filters( 'extrachill_analytics_public_write_rate_limit', 240 );
-	if ( $limit < 1 || ! function_exists( 'get_transient' ) || ! function_exists( 'set_transient' ) ) {
+	if ( $limit < 1 ) {
 		return true;
 	}
 
 	$ip = function_exists( 'extrachill_analytics_get_client_ip' ) ? extrachill_analytics_get_client_ip() : '';
-	if ( '' === $ip ) {
-		return true;
+	if (
+		'' === $ip
+		|| ! function_exists( 'wp_using_ext_object_cache' )
+		|| ! wp_using_ext_object_cache()
+		|| ! function_exists( 'wp_cache_add' )
+		|| ! function_exists( 'wp_cache_incr' )
+	) {
+		return new WP_Error(
+			'analytics_write_limiter_unavailable',
+			__( 'Analytics write admission is temporarily unavailable.', 'extrachill-analytics' ),
+			array( 'status' => 503 )
+		);
 	}
 
-	$key   = 'ec_an_write_' . substr( hash_hmac( 'sha256', $ip, wp_salt( 'nonce' ) ), 0, 32 );
-	$count = (int) get_transient( $key );
-	if ( $count >= $limit ) {
+	$key   = 'write_' . substr( hash_hmac( 'sha256', $ip, wp_salt( 'nonce' ) ), 0, 32 );
+	$group = 'extrachill-analytics-admission';
+	if ( wp_cache_add( $key, 1, $group, MINUTE_IN_SECONDS ) ) {
+		$count = 1;
+	} else {
+		$count = wp_cache_incr( $key, 1, $group );
+	}
+
+	if ( false === $count || ! is_numeric( $count ) ) {
+		return new WP_Error(
+			'analytics_write_limiter_unavailable',
+			__( 'Analytics write admission is temporarily unavailable.', 'extrachill-analytics' ),
+			array( 'status' => 503 )
+		);
+	}
+
+	if ( (int) $count > $limit ) {
 		return new WP_Error(
 			'analytics_write_rate_limited',
 			__( 'Too many analytics writes.', 'extrachill-analytics' ),
 			array( 'status' => 429 )
 		);
 	}
-
-	set_transient( $key, $count + 1, MINUTE_IN_SECONDS );
 
 	return true;
 }
@@ -199,7 +221,7 @@ function extrachill_analytics_validate_pageview_write( $post_id, $source_path, $
 	}
 
 	$expected = extrachill_analytics_pageview_proof( $post_id, $source_path, $route_family, $source_host );
-	if ( '' !== $proof && ! hash_equals( $expected, $proof ) ) {
+	if ( '' === $proof || ! hash_equals( $expected, $proof ) ) {
 		return new WP_Error(
 			'invalid_pageview_proof',
 			__( 'Pageview source details do not match the rendered page.', 'extrachill-analytics' ),
@@ -207,15 +229,7 @@ function extrachill_analytics_validate_pageview_write( $post_id, $source_path, $
 		);
 	}
 
-	if ( '' === $proof && ( $post_id <= 0 || ! extrachill_analytics_public_post_matches_source( $post_id, $source_path, $source_host ) ) ) {
-		return new WP_Error(
-			'invalid_pageview_source',
-			__( 'Legacy pageview source does not match the public post.', 'extrachill-analytics' ),
-			array( 'status' => 403 )
-		);
-	}
-
-	if ( '' !== $proof && $post_id > 0 ) {
+	if ( $post_id > 0 ) {
 		$post = get_post( $post_id );
 		if ( ! $post || ! extrachill_analytics_write_post_is_published( $post ) ) {
 			return new WP_Error(

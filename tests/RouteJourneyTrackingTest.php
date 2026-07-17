@@ -24,12 +24,14 @@ final class RouteJourneyTrackingTest extends TestCase {
 		$_SERVER['HTTP_HOST']                                    = 'extrachill.com';
 		$_SERVER['HTTP_ORIGIN']                                  = 'https://extrachill.com';
 		$_SERVER['HTTP_USER_AGENT']                              = 'Mozilla/5.0';
+		$_SERVER['REMOTE_ADDR']                                  = '203.0.113.20';
 		$_SERVER['REQUEST_METHOD']                               = 'GET';
 		$_COOKIE['ec_vid']                                       = '123e4567-e89b-42d3-a456-426614174000';
 		$GLOBALS['extrachill_analytics_test_tracked_post_views'] = array();
 		$GLOBALS['extrachill_analytics_test_events']             = array();
 		$GLOBALS['extrachill_analytics_test_actions']            = array();
-		$GLOBALS['extrachill_analytics_test_transients']         = array();
+		$GLOBALS['extrachill_analytics_test_cache']              = array();
+		$GLOBALS['extrachill_analytics_test_ext_object_cache']   = true;
 	}
 
 	/**
@@ -45,6 +47,7 @@ final class RouteJourneyTrackingTest extends TestCase {
 			$_SERVER['HTTP_HOST'],
 			$_SERVER['HTTP_ORIGIN'],
 			$_SERVER['HTTP_USER_AGENT'],
+			$_SERVER['REMOTE_ADDR'],
 			$_SERVER['HTTP_SEC_GPC'],
 			$_SERVER['REQUEST_METHOD'],
 			$_COOKIE['ec_vid']
@@ -111,8 +114,7 @@ final class RouteJourneyTrackingTest extends TestCase {
 		$this->assertStringContainsString( 'source_path: config.sourcePath', $script );
 		$this->assertStringContainsString( 'route_family: config.routeFamily', $script );
 		$this->assertStringNotContainsString( "rest_url( 'extrachill/v1/analytics/view' )", $assets );
-		$this->assertStringContainsString( "array( 'required' => array( 'post_id' ) )", $ability );
-		$this->assertStringContainsString( "array( 'required' => array( 'source_path', 'route_family' ) )", $ability );
+		$this->assertStringContainsString( "'required'   => array( 'source_path', 'route_family', 'proof' )", $ability );
 	}
 
 	/**
