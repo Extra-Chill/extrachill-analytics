@@ -224,7 +224,7 @@ function extrachill_analytics_ability_get_route_transitions( $input ) {
 		'historical_unclassified_pageviews' => $coverage_row ? (int) $coverage_row->historical_unclassified_pageviews : 0,
 		'loaded_identified_pageviews'       => count( $events ),
 		'truncated'                         => $truncated,
-		'definition'                        => 'Transitions require anonymous first-party visitor identity, so NULL/empty visitor rows contribute only to coverage. Explicit route families are write-time classifications; older post-backed rows are inferred as singular; older rows with neither signal remain unclassified. When truncated=true, rankings cover only the most recent max_pageviews identified rows and are not complete-window totals.',
+		'definition'                        => 'Transitions require first-party visitor identity, so NULL/empty visitor rows contribute only to coverage. Explicit route families are write-time classifications; older post-backed rows are inferred as singular; older rows with neither signal remain unclassified. When truncated=true, rankings cover only the most recent max_pageviews identified rows and are not complete-window totals.',
 	);
 	$report['bounds']     = array(
 		'days'             => $days,
