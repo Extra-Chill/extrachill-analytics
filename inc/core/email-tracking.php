@@ -19,6 +19,10 @@ defined( 'ABSPATH' ) || exit;
 const EXTRACHILL_ANALYTICS_EMAIL_EVENT_RETENTION_DAYS = 30;
 const EXTRACHILL_ANALYTICS_EMAIL_CLEANUP_BATCH_SIZE   = 1000;
 const EXTRACHILL_ANALYTICS_EMAIL_PRIVACY_BATCH_SIZE   = 500;
+const EXTRACHILL_ANALYTICS_EMAIL_CLEANUP_HOOK         = 'extrachill_analytics_email_cleanup';
+const EXTRACHILL_ANALYTICS_EMAIL_CLEANUP_CONTINUE     = 'extrachill_analytics_email_cleanup_continue';
+const EXTRACHILL_ANALYTICS_EMAIL_CLEANUP_LOCK         = 'extrachill_analytics_email_cleanup_lock';
+const EXTRACHILL_ANALYTICS_EMAIL_CLEANUP_ERROR        = 'extrachill_analytics_email_cleanup_error';
 
 /**
  * Count recipients without retaining their addresses.
@@ -102,10 +106,27 @@ add_action( 'wp_mail_failed', 'extrachill_analytics_log_email_failed' );
 function extrachill_analytics_cleanup_email_events() {
 	global $wpdb;
 
+	if ( ! is_main_site() ) {
+		return false;
+	}
+
+	$lock_time = (int) get_site_option( EXTRACHILL_ANALYTICS_EMAIL_CLEANUP_LOCK, 0 );
+	if ( $lock_time && ( time() - $lock_time ) < ( 10 * MINUTE_IN_SECONDS ) ) {
+		return false;
+	}
+
+	if ( $lock_time ) {
+		delete_site_option( EXTRACHILL_ANALYTICS_EMAIL_CLEANUP_LOCK );
+	}
+
+	if ( ! add_site_option( EXTRACHILL_ANALYTICS_EMAIL_CLEANUP_LOCK, time() ) ) {
+		return false;
+	}
+
 	$table  = extrachill_analytics_events_table();
 	$cutoff = gmdate( 'Y-m-d H:i:s', time() - ( EXTRACHILL_ANALYTICS_EMAIL_EVENT_RETENTION_DAYS * DAY_IN_SECONDS ) );
 
-	$wpdb->query( // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- Bounded maintenance query against the plugin-owned analytics table.
+	$expired = $wpdb->query( // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- Bounded maintenance query against the plugin-owned analytics table.
 		$wpdb->prepare(
 			"DELETE FROM {$table} WHERE event_type IN (%s, %s) AND created_at < %s ORDER BY id ASC LIMIT %d", // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Code-defined table name; values are prepared.
 			'email_sent',
@@ -115,7 +136,7 @@ function extrachill_analytics_cleanup_email_events() {
 		)
 	);
 
-	$wpdb->query( // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- Bounded maintenance query against the plugin-owned analytics table.
+	$scrubbed = $wpdb->query( // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- Bounded maintenance query against the plugin-owned analytics table.
 		$wpdb->prepare(
 			"UPDATE {$table} SET event_data = JSON_REMOVE(event_data, '$.to', '$.subject', '$.error') WHERE event_type IN (%s, %s) AND JSON_VALID(event_data) = 1 AND (JSON_EXTRACT(event_data, '$.to') IS NOT NULL OR JSON_EXTRACT(event_data, '$.subject') IS NOT NULL OR JSON_EXTRACT(event_data, '$.error') IS NOT NULL) ORDER BY id ASC LIMIT %d", // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Code-defined table name; values are prepared.
 			'email_sent',
@@ -125,7 +146,7 @@ function extrachill_analytics_cleanup_email_events() {
 	);
 
 	// Invalid legacy payloads cannot be safely scrubbed, so remove those rows.
-	$wpdb->query( // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- Bounded maintenance query against the plugin-owned analytics table.
+	$invalid = $wpdb->query( // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- Bounded maintenance query against the plugin-owned analytics table.
 		$wpdb->prepare(
 			"DELETE FROM {$table} WHERE event_type IN (%s, %s) AND JSON_VALID(event_data) = 0 ORDER BY id ASC LIMIT %d", // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Code-defined table name; values are prepared.
 			'email_sent',
@@ -133,15 +154,55 @@ function extrachill_analytics_cleanup_email_events() {
 			EXTRACHILL_ANALYTICS_EMAIL_CLEANUP_BATCH_SIZE
 		)
 	);
+
+	$results = array(
+		'expired_delete' => $expired,
+		'legacy_scrub'   => $scrubbed,
+		'invalid_delete' => $invalid,
+	);
+	$failed  = array_search( false, $results, true );
+
+	if ( false !== $failed ) {
+		$error = substr( sanitize_text_field( (string) $wpdb->last_error ), 0, 500 );
+		update_site_option(
+			EXTRACHILL_ANALYTICS_EMAIL_CLEANUP_ERROR,
+			array(
+				'operation'   => $failed,
+				'recorded_at' => gmdate( 'Y-m-d H:i:s' ),
+				'error'       => $error,
+			)
+		);
+		error_log( sprintf( '[Extra Chill Analytics] Email cleanup failed during %s: %s', $failed, $error ) ); // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log -- Cron failures must be visible to operators.
+	} else {
+		delete_site_option( EXTRACHILL_ANALYTICS_EMAIL_CLEANUP_ERROR );
+	}
+
+	delete_site_option( EXTRACHILL_ANALYTICS_EMAIL_CLEANUP_LOCK );
+
+	if ( false !== $failed || in_array( EXTRACHILL_ANALYTICS_EMAIL_CLEANUP_BATCH_SIZE, $results, true ) ) {
+		extrachill_analytics_schedule_email_cleanup_continuation();
+	}
+
+	return false === $failed;
 }
-add_action( 'extrachill_analytics_email_cleanup', 'extrachill_analytics_cleanup_email_events' );
+add_action( EXTRACHILL_ANALYTICS_EMAIL_CLEANUP_HOOK, 'extrachill_analytics_cleanup_email_events' );
+add_action( EXTRACHILL_ANALYTICS_EMAIL_CLEANUP_CONTINUE, 'extrachill_analytics_cleanup_email_events' );
+
+/**
+ * Queue the next bounded cleanup batch without duplicating continuations.
+ */
+function extrachill_analytics_schedule_email_cleanup_continuation() {
+	if ( ! wp_next_scheduled( EXTRACHILL_ANALYTICS_EMAIL_CLEANUP_CONTINUE ) ) {
+		wp_schedule_single_event( time() + MINUTE_IN_SECONDS, EXTRACHILL_ANALYTICS_EMAIL_CLEANUP_CONTINUE );
+	}
+}
 
 /**
  * Schedule daily email-event privacy cleanup.
  */
 function extrachill_analytics_schedule_email_cleanup() {
-	if ( ! wp_next_scheduled( 'extrachill_analytics_email_cleanup' ) ) {
-		wp_schedule_event( time() + HOUR_IN_SECONDS, 'daily', 'extrachill_analytics_email_cleanup' );
+	if ( is_main_site() && ! wp_next_scheduled( EXTRACHILL_ANALYTICS_EMAIL_CLEANUP_HOOK ) ) {
+		wp_schedule_event( time() + HOUR_IN_SECONDS, 'daily', EXTRACHILL_ANALYTICS_EMAIL_CLEANUP_HOOK );
 	}
 }
 add_action( 'init', 'extrachill_analytics_schedule_email_cleanup' );
@@ -153,6 +214,10 @@ add_action( 'init', 'extrachill_analytics_schedule_email_cleanup' );
  * @return array Registered exporters.
  */
 function extrachill_analytics_register_email_event_exporter( $exporters ) {
+	if ( ! is_main_site() ) {
+		return $exporters;
+	}
+
 	$exporters['extrachill-email-analytics'] = array(
 		'exporter_friendly_name' => __( 'Extra Chill Email Analytics', 'extrachill-analytics' ),
 		'callback'               => 'extrachill_analytics_email_event_exporter',
@@ -172,6 +237,13 @@ add_filter( 'wp_privacy_personal_data_exporters', 'extrachill_analytics_register
 function extrachill_analytics_email_event_exporter( $email_address, $page = 1 ) {
 	global $wpdb;
 
+	if ( ! is_main_site() ) {
+		return array(
+			'data' => array(),
+			'done' => true,
+		);
+	}
+
 	$user = get_user_by( 'email', $email_address );
 	if ( ! $user ) {
 		return array(
@@ -180,19 +252,46 @@ function extrachill_analytics_email_event_exporter( $email_address, $page = 1 ) 
 		);
 	}
 
-	$page   = max( 1, (int) $page );
-	$offset = ( $page - 1 ) * EXTRACHILL_ANALYTICS_EMAIL_PRIVACY_BATCH_SIZE;
-	$table  = extrachill_analytics_events_table();
+	$page          = max( 1, (int) $page );
+	$table         = extrachill_analytics_events_table();
+	$transient_key = 'extrachill_email_export_' . hash_hmac( 'sha256', strtolower( trim( $email_address ) ), wp_salt( 'nonce' ) );
+	$state         = get_site_transient( $transient_key );
+
+	if ( 1 === $page ) {
+		$max_id = (int) $wpdb->get_var( // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- Snapshot boundary for a stable Core privacy export.
+			$wpdb->prepare(
+				"SELECT MAX(id) FROM {$table} WHERE user_id = %d AND event_type IN (%s, %s)", // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Code-defined table name; values are prepared.
+				$user->ID,
+				'email_sent',
+				'email_failed'
+			)
+		);
+		$state  = array(
+			'max_id'  => $max_id,
+			'cursors' => array( 1 => 0 ),
+		);
+	}
+
+	if ( ! is_array( $state ) || ! isset( $state['max_id'], $state['cursors'][ $page ] ) ) {
+		return array(
+			'data' => array(),
+			'done' => true,
+		);
+	}
+
+	$cursor = (int) $state['cursors'][ $page ];
 	$rows   = $wpdb->get_results( // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- Core privacy request requires current plugin-owned rows.
 		$wpdb->prepare(
-			"SELECT id, event_type, event_data, created_at FROM {$table} WHERE user_id = %d AND event_type IN (%s, %s) ORDER BY id ASC LIMIT %d OFFSET %d", // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Code-defined table name; values are prepared.
+			"SELECT id, blog_id, event_type, event_data, created_at FROM {$table} WHERE user_id = %d AND event_type IN (%s, %s) AND id > %d AND id <= %d ORDER BY id ASC LIMIT %d", // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Code-defined table name; values are prepared.
 			$user->ID,
 			'email_sent',
 			'email_failed',
-			EXTRACHILL_ANALYTICS_EMAIL_PRIVACY_BATCH_SIZE,
-			$offset
+			$cursor,
+			(int) $state['max_id'],
+			EXTRACHILL_ANALYTICS_EMAIL_PRIVACY_BATCH_SIZE
 		)
 	);
+	$rows   = is_array( $rows ) ? $rows : array();
 
 	$data = array();
 	foreach ( $rows as $row ) {
@@ -206,6 +305,10 @@ function extrachill_analytics_email_event_exporter( $email_address, $page = 1 ) 
 			array(
 				'name'  => __( 'Recorded at', 'extrachill-analytics' ),
 				'value' => $row->created_at,
+			),
+			array(
+				'name'  => __( 'Site ID', 'extrachill-analytics' ),
+				'value' => (string) (int) $row->blog_id,
 			),
 		);
 
@@ -227,9 +330,18 @@ function extrachill_analytics_email_event_exporter( $email_address, $page = 1 ) 
 		);
 	}
 
+	$done = count( $rows ) < EXTRACHILL_ANALYTICS_EMAIL_PRIVACY_BATCH_SIZE;
+	if ( $done ) {
+		delete_site_transient( $transient_key );
+	} else {
+		$last_row                      = end( $rows );
+		$state['cursors'][ $page + 1 ] = (int) $last_row->id;
+		set_site_transient( $transient_key, $state, HOUR_IN_SECONDS );
+	}
+
 	return array(
 		'data' => $data,
-		'done' => count( $rows ) < EXTRACHILL_ANALYTICS_EMAIL_PRIVACY_BATCH_SIZE,
+		'done' => $done,
 	);
 }
 
@@ -240,6 +352,10 @@ function extrachill_analytics_email_event_exporter( $email_address, $page = 1 ) 
  * @return array Registered erasers.
  */
 function extrachill_analytics_register_email_event_eraser( $erasers ) {
+	if ( ! is_main_site() ) {
+		return $erasers;
+	}
+
 	$erasers['extrachill-email-analytics'] = array(
 		'eraser_friendly_name' => __( 'Extra Chill Email Analytics', 'extrachill-analytics' ),
 		'callback'             => 'extrachill_analytics_email_event_eraser',
@@ -263,6 +379,15 @@ function extrachill_analytics_email_event_eraser( $email_address, $page = 1 ) {
 	global $wpdb;
 
 	$page = (int) $page;
+	if ( ! is_main_site() ) {
+		return array(
+			'items_removed'  => false,
+			'items_retained' => false,
+			'messages'       => array(),
+			'done'           => true,
+		);
+	}
+
 	$user = get_user_by( 'email', $email_address );
 	if ( ! $user ) {
 		return array(
