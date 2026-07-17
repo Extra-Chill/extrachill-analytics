@@ -428,28 +428,44 @@ function extrachill_analytics_ability_get_conversion_map( $input ) {
 		$flush( $buffer, $current_visitor );
 	}
 
-	// Attribute each deduplicated outcome through two independent lenses:
-	// direct source_url resolution and the visitor's eligible entry journey.
-	// Neither lens fills gaps in the other. Read in deterministic keyset pages so
-	// adding lifecycle outcomes does not materialize an unbounded event window.
-	$seen_outcomes = array();
+	// First observe window-local visitor/user bridges, exactly matching the
+	// activation funnel: only one-to-one visitors stitch to a user. The second
+	// bounded pass can then deduplicate mixed anonymous/authenticated rows before
+	// applying either attribution lens.
+	$visitor_users = array();
 	extrachill_analytics_conversion_each_outcome_page(
 		$table,
 		$outcome_types,
 		$since,
 		$now_utc,
-		static function ( $page ) use ( $entry_blog_id, $journeys_by_visitor, &$outcome_overall, &$outcomes_by_article, &$outcomes_by_category, &$outcome_coverage, &$seen_outcomes ) {
-			extrachill_analytics_conversion_attribute_outcome_rows(
+		static function ( $page ) use ( &$visitor_users ) {
+			extrachill_analytics_conversion_observe_outcome_identities( $page, $visitor_users );
+		}
+	);
+	$visitor_to_user = extrachill_analytics_conversion_resolve_outcome_identities( $visitor_users );
+	$outcome_records = array();
+	extrachill_analytics_conversion_each_outcome_page(
+		$table,
+		$outcome_types,
+		$since,
+		$now_utc,
+		static function ( $page ) use ( $entry_blog_id, $journeys_by_visitor, $visitor_to_user, &$outcome_records, &$outcome_coverage ) {
+			extrachill_analytics_conversion_collect_outcome_rows(
 				$page,
 				$entry_blog_id,
 				$journeys_by_visitor,
-				$outcome_overall,
-				$outcomes_by_article,
-				$outcomes_by_category,
-				$outcome_coverage,
-				$seen_outcomes
+				$visitor_to_user,
+				$outcome_records,
+				$outcome_coverage
 			);
 		}
+	);
+	extrachill_analytics_conversion_apply_outcome_records(
+		$outcome_records,
+		$outcome_overall,
+		$outcomes_by_article,
+		$outcomes_by_category,
+		$outcome_coverage
 	);
 
 	foreach ( $outcome_types as $outcome_type ) {
@@ -525,7 +541,7 @@ function extrachill_analytics_ability_get_conversion_map( $input ) {
 			'by_article'            => $article_outcomes,
 			'by_category'           => $category_outcomes,
 			'coverage'              => $outcome_coverage,
-			'attribution_semantics' => 'direct_source resolves the outcome event source_url to a published main-site article. visitor_journey attributes an identified outcome occurring after that visitor\'s first eligible mature entry journey, split at the configured pageview-session boundary. The lenses are independent and may both attribute one outcome; do not add them as unique people. Coverage status measured, partial, or not_instrumented must be read with each count.',
+			'attribution_semantics' => 'direct_source resolves the outcome event source_url to a published main-site article. visitor_journey attributes an identified outcome occurring after that visitor\'s first eligible mature entry journey, split at the configured pageview-session boundary. Outcome identity is event_data.user_id then stored user_id, with visitor_id stitched to a user only when this window observes exactly one user for that visitor; ambiguous visitors are not merged. Repeated person/outcome rows count once, while later rows may supply attribution missing from an earlier duplicate. The lenses are independent and may both attribute one outcome; do not add them as unique people. Coverage status measured, partial, or not_instrumented must be read with each count.',
 		),
 		'days'                        => $days,
 		'session_gap_mins'            => $session_gap_mins,
@@ -535,7 +551,7 @@ function extrachill_analytics_ability_get_conversion_map( $input ) {
 		'period'                      => gmdate( 'Y-m-d', strtotime( "-{$days} days" ) ) . ' to ' . gmdate( 'Y-m-d' ),
 		'since'                       => $since,
 		'as_of'                       => $now_utc,
-		'note'                        => 'First-party, bot-filtered editorial-to-platform funnel. entry_sessions is a legacy field name: it counts one first eligible, mature entry journey per visitor, not every entry session. Eligible entries start on a published blog-1 post; route views never become editorial entries. Same-session and return reach include eligible collected events/community/artist routes. Newsletter signup, registration, onboarding completion, artist profile first publication, and Local Scene prompt completion are successful server-side outcomes reported through separate direct-source and visitor-journey lenses. Automatic registration newsletter subscriptions are excluded. Missing source or visitor identity and outcome types absent from the window remain explicit coverage, never an inferred zero. Route-level destination collection is additive from issue #182 onward, so historical periods remain singular-only. Pageviews include one inactivity-gap before the lower boundary; outcomes are read in bounded keyset pages. Late entries without the configured return observation period and NULL-visitor pageviews (GPC/DNT opt-out) are excluded.',
+		'note'                        => 'First-party, bot-filtered editorial-to-platform funnel. entry_sessions is a legacy field name: it counts one first eligible, mature entry journey per visitor, not every entry session. Eligible entries start on a published blog-1 post; route views never become editorial entries. Same-session and return reach include eligible collected events/community/artist routes. Newsletter signup, registration, onboarding completion, and artist profile first publication are successful server-side outcomes reported through separate direct-source and visitor-journey lenses. Automatic registration newsletter subscriptions are excluded. Missing source or visitor identity and outcome types absent from the window remain explicit coverage, never an inferred zero. Route-level destination collection is additive from issue #182 onward, so historical periods remain singular-only. Pageviews include one inactivity-gap before the lower boundary; outcomes use two bounded keyset passes ordered by created_at then row ID for ambiguity-safe visitor/user stitching and attribution. Late entries without the configured return observation period and NULL-visitor pageviews (GPC/DNT opt-out) are excluded.',
 	);
 }
 
@@ -555,7 +571,6 @@ function extrachill_analytics_conversion_outcome_types() {
 		'user_registration',
 		defined( 'EC_ANALYTICS_EVENT_ONBOARDING_COMPLETED' ) ? EC_ANALYTICS_EVENT_ONBOARDING_COMPLETED : 'onboarding_completed',
 		defined( 'EC_ANALYTICS_EVENT_ARTIST_PROFILE_FIRST_PUBLISH' ) ? EC_ANALYTICS_EVENT_ARTIST_PROFILE_FIRST_PUBLISH : 'artist_profile_first_publish',
-		defined( 'EC_ANALYTICS_EVENT_LOCAL_SCENE_PROMPT_COMPLETED' ) ? EC_ANALYTICS_EVENT_LOCAL_SCENE_PROMPT_COMPLETED : 'local_scene_prompt_completed',
 	);
 }
 
@@ -615,95 +630,193 @@ function extrachill_analytics_conversion_each_outcome_page( $table, $outcome_typ
 }
 
 /**
- * Attribute one ordered page of concrete outcome rows.
+ * Normalize one stored outcome row.
  *
- * State is passed by reference so deduplication and counts remain stable across
- * keyset pages. The first stored event for a person/outcome wins; therefore an
- * outcome before entry is never replaced by a later duplicate.
- *
- * @param object[] $rows                  Ordered outcome rows.
- * @param int      $entry_blog_id         Editorial blog ID.
- * @param array    $journeys_by_visitor   Eligible journeys keyed by visitor.
- * @param array    $outcome_overall       Overall buckets, by reference.
- * @param array    $outcomes_by_article   Article buckets, by reference.
- * @param array    $outcomes_by_category  Category buckets, by reference.
- * @param array    $outcome_coverage      Coverage by event type, by reference.
- * @param array    $seen_outcomes         Seen person/outcome keys, by reference.
+ * @param object $row Stored analytics event row.
+ * @return array Normalized outcome.
  */
-function extrachill_analytics_conversion_attribute_outcome_rows( $rows, $entry_blog_id, $journeys_by_visitor, &$outcome_overall, &$outcomes_by_article, &$outcomes_by_category, &$outcome_coverage, &$seen_outcomes ) {
+function extrachill_analytics_conversion_normalize_outcome( $row ) {
+	$data = json_decode( (string) $row->event_data, true );
+
+	return array(
+		'id'         => (int) $row->id,
+		'event_type' => (string) $row->event_type,
+		'event_data' => is_array( $data ) ? $data : array(),
+		'source_url' => (string) $row->source_url,
+		'user_id'    => (int) $row->user_id,
+		'visitor_id' => trim( (string) $row->visitor_id ),
+		'ts'         => (int) $row->ts,
+	);
+}
+
+/**
+ * Whether a stored event is excluded from successful outcome attribution.
+ *
+ * @param array $outcome Normalized outcome.
+ * @return bool Whether the event is excluded.
+ */
+function extrachill_analytics_conversion_outcome_is_excluded( $outcome ) {
+	return 'newsletter_signup' === $outcome['event_type']
+		&& 'registration' === (string) ( $outcome['event_data']['context'] ?? '' );
+}
+
+/**
+ * Observe visitor/user bridges in one first-pass keyset page.
+ *
+ * @param object[] $rows          Ordered outcome rows.
+ * @param array    $visitor_users Observed users keyed by visitor, by reference.
+ */
+function extrachill_analytics_conversion_observe_outcome_identities( $rows, &$visitor_users ) {
 	foreach ( $rows as $row ) {
-		$type = (string) $row->event_type;
+		$outcome = extrachill_analytics_conversion_normalize_outcome( $row );
+		if ( extrachill_analytics_conversion_outcome_is_excluded( $outcome ) ) {
+			continue;
+		}
+		$user_id    = extrachill_analytics_conversion_outcome_user_id( $outcome );
+		$visitor_id = $outcome['visitor_id'];
+		if ( $user_id > 0 && '' !== $visitor_id ) {
+			$visitor_users[ $visitor_id ][ $user_id ] = true;
+		}
+	}
+}
+
+/**
+ * Keep only unambiguous one-visitor-to-one-user bridges.
+ *
+ * @param array $visitor_users Observed users keyed by visitor.
+ * @return array<string,int> Resolved user ID keyed by visitor.
+ */
+function extrachill_analytics_conversion_resolve_outcome_identities( $visitor_users ) {
+	$visitor_to_user = array();
+	foreach ( $visitor_users as $visitor_id => $user_ids ) {
+		if ( 1 === count( $user_ids ) ) {
+			$visitor_to_user[ $visitor_id ] = (int) array_key_first( $user_ids );
+		}
+	}
+	return $visitor_to_user;
+}
+
+/**
+ * Collect one second-pass page into deduplicated person/outcome records.
+ *
+ * Later duplicate rows may fill direct-source or journey attribution that an
+ * earlier row lacked. Input order remains created_at then row ID across pages.
+ *
+ * @param object[] $rows                Ordered outcome rows.
+ * @param int      $entry_blog_id       Editorial blog ID.
+ * @param array    $journeys_by_visitor Eligible journeys keyed by visitor.
+ * @param array    $visitor_to_user     Unambiguous visitor/user bridges.
+ * @param array    $outcome_records     Records keyed by type/person, by reference.
+ * @param array    $outcome_coverage    Coverage by event type, by reference.
+ */
+function extrachill_analytics_conversion_collect_outcome_rows( $rows, $entry_blog_id, $journeys_by_visitor, $visitor_to_user, &$outcome_records, &$outcome_coverage ) {
+	foreach ( $rows as $row ) {
+		$outcome = extrachill_analytics_conversion_normalize_outcome( $row );
+		$type    = $outcome['event_type'];
 		if ( ! isset( $outcome_coverage[ $type ] ) ) {
 			continue;
 		}
 
-		$data = json_decode( (string) $row->event_data, true );
-		$data = is_array( $data ) ? $data : array();
 		++$outcome_coverage[ $type ]['stored_events'];
-
-		if ( 'newsletter_signup' === $type && 'registration' === (string) ( $data['context'] ?? '' ) ) {
+		if ( extrachill_analytics_conversion_outcome_is_excluded( $outcome ) ) {
 			++$outcome_coverage[ $type ]['automatic_registration_excluded'];
 			continue;
 		}
 
-		$outcome    = array(
-			'id'         => (int) $row->id,
-			'event_type' => $type,
-			'event_data' => $data,
-			'source_url' => (string) $row->source_url,
-			'user_id'    => (int) $row->user_id,
-			'visitor_id' => (string) $row->visitor_id,
-			'ts'         => (int) $row->ts,
-		);
-		$dedupe_key = extrachill_analytics_conversion_outcome_dedupe_key( $outcome );
-		if ( isset( $seen_outcomes[ $type ][ $dedupe_key ] ) ) {
+		$person_id = extrachill_analytics_conversion_outcome_dedupe_key( $outcome, $visitor_to_user );
+		if ( isset( $outcome_records[ $type ][ $person_id ] ) ) {
 			++$outcome_coverage[ $type ]['duplicate_events'];
-			continue;
-		}
-		$seen_outcomes[ $type ][ $dedupe_key ] = true;
-		++$outcome_coverage[ $type ]['deduplicated_outcomes'];
-
-		if ( '' === trim( $outcome['source_url'] ) ) {
-			++$outcome_coverage[ $type ]['missing_source_url'];
 		} else {
-			++$outcome_coverage[ $type ]['with_source_url'];
-			$direct_post_id = extrachill_analytics_conversion_source_article_id( $outcome['source_url'], $entry_blog_id );
+			++$outcome_coverage[ $type ]['deduplicated_outcomes'];
+			$outcome_records[ $type ][ $person_id ] = array(
+				'has_source_url'       => false,
+				'direct_post_id'       => 0,
+				'has_visitor_identity' => false,
+				'saw_journey'          => false,
+				'saw_before_entry'     => false,
+				'journey_stage'        => '',
+				'journey_post_id'      => 0,
+			);
+		}
+		$record = &$outcome_records[ $type ][ $person_id ];
+
+		// A later duplicate may still carry source instrumentation.
+		if ( '' !== trim( $outcome['source_url'] ) && 0 === $record['direct_post_id'] ) {
+			$record['has_source_url'] = true;
+			$direct_post_id           = extrachill_analytics_conversion_source_article_id( $outcome['source_url'], $entry_blog_id );
 			if ( $direct_post_id > 0 ) {
-				++$outcome_coverage[ $type ]['direct_source_attributed'];
-				extrachill_analytics_conversion_apply_outcome( $outcome_overall, $type, 'direct_source' );
-				extrachill_analytics_conversion_apply_article_outcome( $outcomes_by_article, $outcomes_by_category, $direct_post_id, $type, 'direct_source' );
-			} else {
-				++$outcome_coverage[ $type ]['unresolved_source_url'];
+				$record['direct_post_id'] = $direct_post_id;
 			}
 		}
 
-		$visitor_id = trim( $outcome['visitor_id'] );
+		$visitor_id = $outcome['visitor_id'];
 		if ( '' === $visitor_id ) {
-			++$outcome_coverage[ $type ]['missing_visitor_identity'];
+			unset( $record );
 			continue;
 		}
-		++$outcome_coverage[ $type ]['with_visitor_identity'];
+		$record['has_visitor_identity'] = true;
 
 		if ( ! isset( $journeys_by_visitor[ $visitor_id ] ) ) {
-			++$outcome_coverage[ $type ]['identity_without_eligible_journey'];
+			unset( $record );
 			continue;
 		}
+		$record['saw_journey'] = true;
 
 		$stage = extrachill_analytics_conversion_outcome_journey_stage( $outcome['ts'], $journeys_by_visitor[ $visitor_id ] );
 		if ( null === $stage ) {
-			++$outcome_coverage[ $type ]['outcome_before_entry'];
+			$record['saw_before_entry'] = true;
+			unset( $record );
 			continue;
 		}
 
-		++$outcome_coverage[ $type ]['visitor_journey_attributed'];
-		extrachill_analytics_conversion_apply_outcome( $outcome_overall, $type, $stage );
-		extrachill_analytics_conversion_apply_article_outcome(
-			$outcomes_by_article,
-			$outcomes_by_category,
-			(int) $journeys_by_visitor[ $visitor_id ]['post_id'],
-			$type,
-			$stage
-		);
+		if ( '' === $record['journey_stage'] ) {
+			$record['journey_stage']   = $stage;
+			$record['journey_post_id'] = (int) $journeys_by_visitor[ $visitor_id ]['post_id'];
+		}
+		unset( $record );
+	}
+}
+
+/**
+ * Apply collected person/outcome records and their final coverage once.
+ *
+ * @param array $records              Deduplicated records keyed by type/person.
+ * @param array $outcome_overall      Overall buckets, by reference.
+ * @param array $outcomes_by_article  Article buckets, by reference.
+ * @param array $outcomes_by_category Category buckets, by reference.
+ * @param array $outcome_coverage     Coverage by event type, by reference.
+ */
+function extrachill_analytics_conversion_apply_outcome_records( $records, &$outcome_overall, &$outcomes_by_article, &$outcomes_by_category, &$outcome_coverage ) {
+	foreach ( $records as $type => $people ) {
+		foreach ( $people as $record ) {
+			if ( $record['direct_post_id'] > 0 ) {
+				++$outcome_coverage[ $type ]['with_source_url'];
+				++$outcome_coverage[ $type ]['direct_source_attributed'];
+				extrachill_analytics_conversion_apply_outcome( $outcome_overall, $type, 'direct_source' );
+				extrachill_analytics_conversion_apply_article_outcome( $outcomes_by_article, $outcomes_by_category, $record['direct_post_id'], $type, 'direct_source' );
+			} elseif ( $record['has_source_url'] ) {
+				++$outcome_coverage[ $type ]['with_source_url'];
+				++$outcome_coverage[ $type ]['unresolved_source_url'];
+			} else {
+				++$outcome_coverage[ $type ]['missing_source_url'];
+			}
+
+			if ( '' !== $record['journey_stage'] ) {
+				++$outcome_coverage[ $type ]['with_visitor_identity'];
+				++$outcome_coverage[ $type ]['visitor_journey_attributed'];
+				extrachill_analytics_conversion_apply_outcome( $outcome_overall, $type, $record['journey_stage'] );
+				extrachill_analytics_conversion_apply_article_outcome( $outcomes_by_article, $outcomes_by_category, $record['journey_post_id'], $type, $record['journey_stage'] );
+			} elseif ( $record['has_visitor_identity'] ) {
+				++$outcome_coverage[ $type ]['with_visitor_identity'];
+				if ( $record['saw_journey'] && $record['saw_before_entry'] ) {
+					++$outcome_coverage[ $type ]['outcome_before_entry'];
+				} else {
+					++$outcome_coverage[ $type ]['identity_without_eligible_journey'];
+				}
+			} else {
+				++$outcome_coverage[ $type ]['missing_visitor_identity'];
+			}
+		}
 	}
 }
 
@@ -751,24 +864,39 @@ function extrachill_analytics_conversion_outcome_zero_coverage() {
 }
 
 /**
+ * Resolve the strongest stored user identity for an outcome.
+ *
+ * @param array $outcome Normalized outcome row.
+ * @return int Positive user ID, or zero when unavailable.
+ */
+function extrachill_analytics_conversion_outcome_user_id( $outcome ) {
+	$data = isset( $outcome['event_data'] ) && is_array( $outcome['event_data'] ) ? $outcome['event_data'] : array();
+	return (int) ( $data['user_id'] ?? ( $outcome['user_id'] ?? 0 ) );
+}
+
+/**
  * Deduplicate an outcome by its strongest available person identity.
  *
  * Registration user IDs live in event_data because the account is created
- * before the request becomes authenticated. Visitor identity is the fallback;
- * identity-free events remain individually observable rather than collapsed.
+ * before the request becomes authenticated. An anonymous visitor resolves to a
+ * user only through an unambiguous bridge observed in the same bounded window.
+ * Identity-free events remain individually observable rather than collapsed.
  *
- * @param array $outcome Normalized outcome row.
+ * @param array $outcome        Normalized outcome row.
+ * @param array $visitor_to_user Unambiguous user IDs keyed by visitor.
  * @return string Stable type-local deduplication key.
  */
-function extrachill_analytics_conversion_outcome_dedupe_key( $outcome ) {
-	$data    = isset( $outcome['event_data'] ) && is_array( $outcome['event_data'] ) ? $outcome['event_data'] : array();
-	$user_id = (int) ( $data['user_id'] ?? ( $outcome['user_id'] ?? 0 ) );
+function extrachill_analytics_conversion_outcome_dedupe_key( $outcome, $visitor_to_user = array() ) {
+	$user_id = extrachill_analytics_conversion_outcome_user_id( $outcome );
 	if ( $user_id > 0 ) {
 		return 'user:' . $user_id;
 	}
 
 	$visitor_id = trim( (string) ( $outcome['visitor_id'] ?? '' ) );
 	if ( '' !== $visitor_id ) {
+		if ( isset( $visitor_to_user[ $visitor_id ] ) ) {
+			return 'user:' . (int) $visitor_to_user[ $visitor_id ];
+		}
 		return 'visitor:' . $visitor_id;
 	}
 

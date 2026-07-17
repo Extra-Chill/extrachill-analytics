@@ -23,7 +23,6 @@ final class ConversionMapOutcomesTest extends TestCase {
 				'user_registration',
 				'onboarding_completed',
 				'artist_profile_first_publish',
-				'local_scene_prompt_completed',
 			),
 			extrachill_analytics_conversion_outcome_types()
 		);
@@ -138,21 +137,15 @@ final class ConversionMapOutcomesTest extends TestCase {
 	}
 
 	/**
-	 * Identified lifecycle outcomes retain same/later-session attribution and dedupe.
+	 * Visitor-only and identified duplicates stitch to one person.
 	 */
-	public function test_lifecycle_outcome_fixtures_preserve_identity_dedupe_and_order(): void {
-		$types    = array(
-			'onboarding_completed',
-			'artist_profile_first_publish',
-			'local_scene_prompt_completed',
-		);
-		$rows     = array(
-			$this->outcome_row( 1, 'local_scene_prompt_completed', 21, 'visitor-c', 900 ),
-			$this->outcome_row( 2, 'artist_profile_first_publish', 11, 'visitor-a', 1200 ),
-			$this->outcome_row( 3, 'local_scene_prompt_completed', 21, 'visitor-c', 1200 ),
-			$this->outcome_row( 4, 'artist_profile_first_publish', 11, 'visitor-a', 1300 ),
-			$this->outcome_row( 5, 'onboarding_completed', 31, '', 1400 ),
-			$this->outcome_row( 6, 'artist_profile_first_publish', 12, 'visitor-b', 3000 ),
+	public function test_mixed_identity_duplicates_stitch_and_later_row_can_attribute(): void {
+		$type     = 'artist_profile_first_publish';
+		$pages    = array(
+			array(
+				$this->outcome_row( 1, $type, 0, 'visitor-a', 900 ),
+				$this->outcome_row( 2, $type, 11, 'visitor-a', 1200 ),
+			),
 		);
 		$journeys = array(
 			'visitor-a' => array(
@@ -160,42 +153,112 @@ final class ConversionMapOutcomesTest extends TestCase {
 				'entry_ts'             => 1000,
 				'same_session_through' => 2000,
 			),
-			'visitor-b' => array(
+		);
+		$result   = $this->run_outcome_pages( $pages, $journeys, array( $type ) );
+
+		$this->assertSame( array( 'visitor-a' => 11 ), $result['visitor_to_user'] );
+		$this->assertSame( 1, $result['coverage'][ $type ]['deduplicated_outcomes'] );
+		$this->assertSame( 1, $result['coverage'][ $type ]['duplicate_events'] );
+		$this->assertSame( 1, $result['coverage'][ $type ]['visitor_journey_attributed'] );
+		$this->assertSame( 1, $result['overall'][ $type ]['same_session'] );
+	}
+
+	/**
+	 * A visitor observed with multiple users remains an independent identity.
+	 */
+	public function test_ambiguous_visitor_mapping_does_not_stitch(): void {
+		$type   = 'artist_profile_first_publish';
+		$pages  = array(
+			array(
+				$this->outcome_row( 1, $type, 0, 'visitor-a', 1200 ),
+				$this->outcome_row( 2, $type, 11, 'visitor-a', 1300 ),
+				$this->outcome_row( 3, $type, 12, 'visitor-a', 1400 ),
+			),
+		);
+		$result = $this->run_outcome_pages( $pages, array(), array( $type ) );
+
+		$this->assertSame( array(), $result['visitor_to_user'] );
+		$this->assertSame( 3, $result['coverage'][ $type ]['deduplicated_outcomes'] );
+		$this->assertSame( 0, $result['coverage'][ $type ]['duplicate_events'] );
+	}
+
+	/**
+	 * Equal timestamps use row-ID order across pages and retain later attribution.
+	 */
+	public function test_cross_page_equal_timestamp_rows_are_deterministic(): void {
+		$type     = 'artist_profile_first_publish';
+		$pages    = array(
+			array( $this->outcome_row( 499, $type, 21, 'visitor-before', 1000 ) ),
+			array( $this->outcome_row( 500, $type, 21, 'visitor-after', 1000 ) ),
+		);
+		$journeys = array(
+			'visitor-before' => array(
 				'post_id'              => 0,
-				'entry_ts'             => 1000,
+				'entry_ts'             => 1100,
 				'same_session_through' => 2000,
 			),
-			'visitor-c' => array(
+			'visitor-after'  => array(
 				'post_id'              => 0,
-				'entry_ts'             => 1000,
+				'entry_ts'             => 900,
 				'same_session_through' => 2000,
 			),
 		);
+		$result   = $this->run_outcome_pages( $pages, $journeys, array( $type ) );
 
-		$overall     = extrachill_analytics_conversion_outcome_zero_bucket( $types );
-		$coverage    = array_fill_keys( $types, extrachill_analytics_conversion_outcome_zero_coverage() );
-		$by_article  = array();
-		$by_category = array();
-		$seen        = array();
+		$this->assertSame( 1, $result['coverage'][ $type ]['deduplicated_outcomes'] );
+		$this->assertSame( 1, $result['coverage'][ $type ]['duplicate_events'] );
+		$this->assertSame( 1, $result['coverage'][ $type ]['visitor_journey_attributed'] );
+		$this->assertSame( 0, $result['coverage'][ $type ]['outcome_before_entry'] );
+		$this->assertSame( 1, $result['overall'][ $type ]['same_session'] );
+	}
 
-		extrachill_analytics_conversion_attribute_outcome_rows(
-			$rows,
-			1,
-			$journeys,
-			$overall,
-			$by_article,
-			$by_category,
-			$coverage,
-			$seen
+	/**
+	 * The bounded reader advances equal-timestamp pages with the event ID cursor.
+	 */
+	public function test_outcome_reader_keyset_pages_equal_timestamps_by_id(): void {
+		$type = 'artist_profile_first_publish';
+		$rows = array();
+		for ( $id = 1; $id <= 501; ++$id ) {
+			$rows[]                      = $this->outcome_row( $id, $type, $id, 'visitor-' . $id, 1000 );
+			$rows[ $id - 1 ]->created_at = '2026-01-01 00:00:00';
+		}
+		$db       = $this->install_outcome_database( array( array_slice( $rows, 0, 500 ), array_slice( $rows, 500 ) ) );
+		$consumed = array();
+
+		extrachill_analytics_conversion_each_outcome_page(
+			'wp_extrachill_analytics_events',
+			array( $type ),
+			'2025-12-01 00:00:00',
+			'2026-01-02 00:00:00',
+			static function ( $page ) use ( &$consumed ) {
+				$consumed = array_merge( $consumed, array_map( static fn( $row ) => (int) $row->id, $page ) );
+			}
 		);
 
-		$this->assertSame( 1, $overall['artist_profile_first_publish']['same_session'] );
-		$this->assertSame( 1, $overall['artist_profile_first_publish']['later_session'] );
-		$this->assertSame( 1, $coverage['artist_profile_first_publish']['duplicate_events'] );
-		$this->assertSame( 1, $coverage['onboarding_completed']['missing_visitor_identity'] );
-		$this->assertSame( 1, $coverage['local_scene_prompt_completed']['outcome_before_entry'] );
-		$this->assertSame( 1, $coverage['local_scene_prompt_completed']['duplicate_events'] );
-		$this->assertSame( 0, $overall['local_scene_prompt_completed']['same_session'] );
+		$this->assertCount( 501, $consumed );
+		$this->assertSame( 501, end( $consumed ) );
+		$this->assertCount( 2, $db->prepared_queries );
+		$this->assertStringContainsString( 'ORDER BY created_at ASC, id ASC', $db->prepared_queries[0]['query'] );
+		$this->assertStringContainsString( 'id > %d', $db->prepared_queries[1]['query'] );
+		$this->assertSame( 500, end( $db->prepared_queries[1]['args'] ) );
+	}
+
+	/**
+	 * Identity-free rows remain distinct outcomes through both passes.
+	 */
+	public function test_identity_free_fixture_rows_remain_distinct(): void {
+		$type   = 'onboarding_completed';
+		$pages  = array(
+			array(
+				$this->outcome_row( 1, $type, 0, '', 1200 ),
+				$this->outcome_row( 2, $type, 0, '', 1300 ),
+			),
+		);
+		$result = $this->run_outcome_pages( $pages, array(), array( $type ) );
+
+		$this->assertSame( 2, $result['coverage'][ $type ]['deduplicated_outcomes'] );
+		$this->assertSame( 0, $result['coverage'][ $type ]['duplicate_events'] );
+		$this->assertSame( 2, $result['coverage'][ $type ]['missing_visitor_identity'] );
 	}
 
 	/**
@@ -238,7 +301,7 @@ final class ConversionMapOutcomesTest extends TestCase {
 	 *
 	 * @param int    $id         Event row ID.
 	 * @param string $event_type Concrete outcome event name.
-	 * @param int    $user_id    Payload and stored user identity.
+	 * @param int    $user_id    Payload user identity.
 	 * @param string $visitor_id Anonymous visitor identity.
 	 * @param int    $timestamp  Event timestamp.
 	 * @return object Outcome row.
@@ -247,11 +310,116 @@ final class ConversionMapOutcomesTest extends TestCase {
 		return (object) array(
 			'id'         => $id,
 			'event_type' => $event_type,
-			'event_data' => wp_json_encode( array( 'user_id' => $user_id ) ),
+			'event_data' => wp_json_encode( $user_id > 0 ? array( 'user_id' => $user_id ) : array() ),
 			'source_url' => '',
-			'user_id'    => $user_id,
+			'user_id'    => 0,
 			'visitor_id' => $visitor_id,
 			'ts'         => $timestamp,
 		);
+	}
+
+	/**
+	 * Run production's two-pass outcome logic over explicit keyset pages.
+	 *
+	 * @param array $pages                Ordered pages of outcome rows.
+	 * @param array $journeys_by_visitor Eligible journeys keyed by visitor.
+	 * @param array $types                Concrete outcome types.
+	 * @return array Aggregated fixture result.
+	 */
+	private function run_outcome_pages( array $pages, array $journeys_by_visitor, array $types ): array {
+		$visitor_users = array();
+		foreach ( $pages as $page ) {
+			extrachill_analytics_conversion_observe_outcome_identities( $page, $visitor_users );
+		}
+		$visitor_to_user = extrachill_analytics_conversion_resolve_outcome_identities( $visitor_users );
+		$records         = array();
+		$coverage        = array_fill_keys( $types, extrachill_analytics_conversion_outcome_zero_coverage() );
+		foreach ( $pages as $page ) {
+			extrachill_analytics_conversion_collect_outcome_rows( $page, 1, $journeys_by_visitor, $visitor_to_user, $records, $coverage );
+		}
+
+		$overall     = extrachill_analytics_conversion_outcome_zero_bucket( $types );
+		$by_article  = array();
+		$by_category = array();
+		extrachill_analytics_conversion_apply_outcome_records( $records, $overall, $by_article, $by_category, $coverage );
+
+		return array(
+			'visitor_to_user' => $visitor_to_user,
+			'overall'         => $overall,
+			'coverage'        => $coverage,
+		);
+	}
+
+	/**
+	 * Install a paged database fixture for the bounded outcome reader.
+	 *
+	 * @param array $pages Ordered result pages.
+	 * @return object Database fixture.
+	 */
+	private function install_outcome_database( array $pages ): object {
+		$db              = new class( $pages ) {
+			/**
+			 * Captured prepared queries.
+			 *
+			 * @var array
+			 */
+			public $prepared_queries = array();
+
+			/**
+			 * Ordered result pages.
+			 *
+			 * @var array
+			 */
+			private $pages;
+
+			/**
+			 * Current page index.
+			 *
+			 * @var int
+			 */
+			private $page_index = 0;
+
+			/**
+			 * Set fixture pages.
+			 *
+			 * @param array $fixture_pages Ordered result pages.
+			 */
+			public function __construct( $fixture_pages ) {
+				$this->pages = $fixture_pages;
+			}
+
+			/**
+			 * Capture a prepared query.
+			 *
+			 * @param string $query SQL query.
+			 * @param mixed  ...$args Prepared values.
+			 * @return string Unchanged query.
+			 */
+			public function prepare( $query, ...$args ) {
+				if ( 1 === count( $args ) && is_array( $args[0] ) ) {
+					$args = $args[0];
+				}
+				$this->prepared_queries[] = array(
+					'query' => $query,
+					'args'  => $args,
+				);
+				return $query;
+			}
+
+			/**
+			 * Return the next result page.
+			 *
+			 * @param string $query SQL query.
+			 * @return array Next result page.
+			 */
+			public function get_results( $query ) {
+				unset( $query );
+				$page = $this->pages[ $this->page_index ] ?? array();
+				++$this->page_index;
+				return $page;
+			}
+		};
+		$GLOBALS['wpdb'] = $db;
+		return $db;
 	}
 }
