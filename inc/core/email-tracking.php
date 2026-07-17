@@ -117,24 +117,17 @@ function extrachill_analytics_cleanup_email_events() {
 		return false;
 	}
 
+	$ownership_token = wp_generate_uuid4();
+	$ownership_lock  = array(
+		'token'       => $ownership_token,
+		'acquired_at' => time(),
+	);
+
 	if ( $lock_token ) {
-		$current_lock = get_site_option( EXTRACHILL_ANALYTICS_EMAIL_CLEANUP_LOCK, array() );
-		if ( ! is_array( $current_lock ) || ! isset( $current_lock['token'] ) || $lock_token !== $current_lock['token'] ) {
+		if ( ! extrachill_analytics_compare_and_swap_email_cleanup_lock( $lock, $ownership_lock ) ) {
 			return false;
 		}
-		delete_site_option( EXTRACHILL_ANALYTICS_EMAIL_CLEANUP_LOCK );
-	}
-
-	$ownership_token = wp_generate_uuid4();
-	if (
-		! add_site_option(
-			EXTRACHILL_ANALYTICS_EMAIL_CLEANUP_LOCK,
-			array(
-				'token'       => $ownership_token,
-				'acquired_at' => time(),
-			)
-		)
-	) {
+	} elseif ( ! add_site_option( EXTRACHILL_ANALYTICS_EMAIL_CLEANUP_LOCK, $ownership_lock ) ) {
 		return false;
 	}
 
@@ -200,7 +193,7 @@ function extrachill_analytics_cleanup_email_events() {
 		delete_site_option( EXTRACHILL_ANALYTICS_EMAIL_CLEANUP_ERROR );
 	}
 
-	extrachill_analytics_release_email_cleanup_lock( $ownership_token );
+	extrachill_analytics_release_email_cleanup_lock( $ownership_lock );
 
 	if ( false !== $failed || in_array( EXTRACHILL_ANALYTICS_EMAIL_CLEANUP_BATCH_SIZE, $results, true ) ) {
 		extrachill_analytics_schedule_email_cleanup_continuation();
@@ -212,15 +205,69 @@ add_action( EXTRACHILL_ANALYTICS_EMAIL_CLEANUP_HOOK, 'extrachill_analytics_clean
 add_action( EXTRACHILL_ANALYTICS_EMAIL_CLEANUP_CONTINUE, 'extrachill_analytics_cleanup_email_events' );
 
 /**
- * Release the cleanup lock only when this worker still owns it.
+ * Atomically replace the exact stale lock observed by this worker.
  *
- * @param string $ownership_token This worker's lock token.
+ * @param array $expected_lock    Exact lock value previously observed.
+ * @param array $replacement_lock New lock value owned by this worker.
+ * @return bool Whether the conditional replacement succeeded.
  */
-function extrachill_analytics_release_email_cleanup_lock( $ownership_token ) {
-	$lock = get_site_option( EXTRACHILL_ANALYTICS_EMAIL_CLEANUP_LOCK, array() );
-	if ( is_array( $lock ) && isset( $lock['token'] ) && $ownership_token === $lock['token'] ) {
-		delete_site_option( EXTRACHILL_ANALYTICS_EMAIL_CLEANUP_LOCK );
+function extrachill_analytics_compare_and_swap_email_cleanup_lock( $expected_lock, $replacement_lock ) {
+	global $wpdb;
+
+	$network_id = get_current_network_id();
+	$updated    = $wpdb->query( // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- Atomic compare-and-swap for the plugin-owned network lock.
+		$wpdb->prepare(
+			"UPDATE {$wpdb->sitemeta} SET meta_value = %s WHERE site_id = %d AND meta_key = %s AND meta_value = %s LIMIT 1", // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Core-owned table name; values are prepared.
+			maybe_serialize( $replacement_lock ),
+			$network_id,
+			EXTRACHILL_ANALYTICS_EMAIL_CLEANUP_LOCK,
+			maybe_serialize( $expected_lock )
+		)
+	);
+
+	if ( 1 === $updated ) {
+		extrachill_analytics_flush_email_cleanup_lock_cache( $network_id );
+		return true;
 	}
+
+	return false;
+}
+
+/**
+ * Atomically release only the exact lock value owned by this worker.
+ *
+ * @param array $ownership_lock Exact lock value owned by this worker.
+ * @return bool Whether the conditional delete succeeded.
+ */
+function extrachill_analytics_release_email_cleanup_lock( $ownership_lock ) {
+	global $wpdb;
+
+	$network_id = get_current_network_id();
+	$deleted    = $wpdb->query( // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- Atomic conditional delete for the plugin-owned network lock.
+		$wpdb->prepare(
+			"DELETE FROM {$wpdb->sitemeta} WHERE site_id = %d AND meta_key = %s AND meta_value = %s LIMIT 1", // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Core-owned table name; values are prepared.
+			$network_id,
+			EXTRACHILL_ANALYTICS_EMAIL_CLEANUP_LOCK,
+			maybe_serialize( $ownership_lock )
+		)
+	);
+
+	if ( 1 === $deleted ) {
+		extrachill_analytics_flush_email_cleanup_lock_cache( $network_id );
+		return true;
+	}
+
+	return false;
+}
+
+/**
+ * Invalidate Core's network-option cache entries after direct lock mutation.
+ *
+ * @param int $network_id Current network ID.
+ */
+function extrachill_analytics_flush_email_cleanup_lock_cache( $network_id ) {
+	wp_cache_delete( $network_id . ':' . EXTRACHILL_ANALYTICS_EMAIL_CLEANUP_LOCK, 'site-options' );
+	wp_cache_delete( $network_id . ':notoptions', 'site-options' );
 }
 
 /**

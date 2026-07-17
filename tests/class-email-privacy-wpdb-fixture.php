@@ -10,6 +10,13 @@
  */
 final class Email_Privacy_Wpdb_Fixture {
 	/**
+	 * Core network-option table name.
+	 *
+	 * @var string
+	 */
+	public $sitemeta = 'wp_sitemeta';
+
+	/**
 	 * Configured mutation results.
 	 *
 	 * @var array<int, int|false>
@@ -29,6 +36,13 @@ final class Email_Privacy_Wpdb_Fixture {
 	 * @var callable[]
 	 */
 	public $query_callbacks = array();
+
+	/**
+	 * Callbacks run immediately before a conditional SQL mutation.
+	 *
+	 * @var callable[]
+	 */
+	public $before_query_callbacks = array();
 
 	/**
 	 * Configured result pages.
@@ -84,13 +98,22 @@ final class Email_Privacy_Wpdb_Fixture {
 	 * @return int|false
 	 */
 	public function query( $query ) {
+		$before_query = array_shift( $this->before_query_callbacks );
+		if ( is_callable( $before_query ) ) {
+			$before_query();
+		}
+
 		$this->queries[]  = $query;
 		$this->last_error = (string) array_shift( $this->query_errors );
 		$callback         = array_shift( $this->query_callbacks );
 		if ( is_callable( $callback ) ) {
 			$callback();
 		}
-		return array_shift( $this->query_results );
+		$result = array_shift( $this->query_results );
+		if ( 1 === $result && 0 === strpos( $query, 'DELETE FROM wp_sitemeta' ) ) {
+			unset( $GLOBALS['extrachill_analytics_test_site_options'][ EXTRACHILL_ANALYTICS_EMAIL_CLEANUP_LOCK ] );
+		}
+		return $result;
 	}
 
 	/**
