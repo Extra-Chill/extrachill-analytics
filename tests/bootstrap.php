@@ -52,6 +52,16 @@ if ( ! function_exists( 'add_action' ) ) {
 		return true;
 	}
 }
+if ( ! function_exists( 'add_filter' ) ) {
+	/**
+	 * Stub for the WordPress add_filter() function.
+	 *
+	 * @param mixed ...$args Hook name, callback, and optional priority/args.
+	 */
+	function add_filter( ...$args ) { // phpcs:ignore Generic.CodeAnalysis.UnusedFunctionParameter.Found
+		return true;
+	}
+}
 if ( ! function_exists( '__' ) ) {
 	/**
 	 * Return untranslated fixture text.
