@@ -21,7 +21,6 @@ const EXTRACHILL_ANALYTICS_EMAIL_CLEANUP_BATCH_SIZE   = 1000;
 const EXTRACHILL_ANALYTICS_EMAIL_PRIVACY_BATCH_SIZE   = 500;
 const EXTRACHILL_ANALYTICS_EMAIL_CLEANUP_HOOK         = 'extrachill_analytics_email_cleanup';
 const EXTRACHILL_ANALYTICS_EMAIL_CLEANUP_CONTINUE     = 'extrachill_analytics_email_cleanup_continue';
-const EXTRACHILL_ANALYTICS_EMAIL_CLEANUP_LOCK         = 'extrachill_analytics_email_cleanup_lock';
 const EXTRACHILL_ANALYTICS_EMAIL_CLEANUP_ERROR        = 'extrachill_analytics_email_cleanup_error';
 
 /**
@@ -110,26 +109,40 @@ function extrachill_analytics_cleanup_email_events() {
 		return false;
 	}
 
-	$lock       = get_site_option( EXTRACHILL_ANALYTICS_EMAIL_CLEANUP_LOCK, array() );
-	$lock_token = is_array( $lock ) && isset( $lock['token'] ) ? (string) $lock['token'] : '';
-	$lock_time  = is_array( $lock ) && isset( $lock['acquired_at'] ) ? (int) $lock['acquired_at'] : 0;
-	if ( $lock_token && ( time() - $lock_time ) < ( 10 * MINUTE_IN_SECONDS ) ) {
-		return false;
-	}
-
-	$ownership_token = wp_generate_uuid4();
-	$ownership_lock  = array(
-		'token'       => $ownership_token,
-		'acquired_at' => time(),
-	);
-
-	if ( $lock_token ) {
-		if ( ! extrachill_analytics_compare_and_swap_email_cleanup_lock( $lock, $ownership_lock ) ) {
-			return false;
+	$lock_name = 'extrachill_analytics_email_cleanup_' . get_current_network_id();
+	$acquired  = extrachill_analytics_acquire_email_cleanup_lock( $lock_name );
+	if ( ! $acquired ) {
+		$error = substr( sanitize_text_field( (string) $wpdb->last_error ), 0, 500 );
+		if ( $error ) {
+			extrachill_analytics_record_email_cleanup_failure( 'lock_acquire', $error );
+			extrachill_analytics_schedule_email_cleanup_continuation();
 		}
-	} elseif ( ! add_site_option( EXTRACHILL_ANALYTICS_EMAIL_CLEANUP_LOCK, $ownership_lock ) ) {
 		return false;
 	}
+
+	$success = false;
+	try {
+		$success = extrachill_analytics_run_email_cleanup_batch();
+	} finally {
+		$released = extrachill_analytics_release_email_cleanup_lock( $lock_name );
+		if ( ! $released ) {
+			$error = substr( sanitize_text_field( (string) $wpdb->last_error ), 0, 500 );
+			extrachill_analytics_record_email_cleanup_failure( 'lock_release', $error ? $error : 'Database connection did not release the advisory lock.' );
+			extrachill_analytics_schedule_email_cleanup_continuation();
+			$success = false;
+		}
+	}
+
+	return $success;
+}
+
+/**
+ * Run one bounded cleanup batch while the caller owns the advisory lock.
+ *
+ * @return bool Whether all batch operations succeeded.
+ */
+function extrachill_analytics_run_email_cleanup_batch() {
+	global $wpdb;
 
 	$table  = extrachill_analytics_events_table();
 	$cutoff = gmdate( 'Y-m-d H:i:s', time() - ( EXTRACHILL_ANALYTICS_EMAIL_EVENT_RETENTION_DAYS * DAY_IN_SECONDS ) );
@@ -193,8 +206,6 @@ function extrachill_analytics_cleanup_email_events() {
 		delete_site_option( EXTRACHILL_ANALYTICS_EMAIL_CLEANUP_ERROR );
 	}
 
-	extrachill_analytics_release_email_cleanup_lock( $ownership_lock );
-
 	if ( false !== $failed || in_array( EXTRACHILL_ANALYTICS_EMAIL_CLEANUP_BATCH_SIZE, $results, true ) ) {
 		extrachill_analytics_schedule_email_cleanup_continuation();
 	}
@@ -205,69 +216,59 @@ add_action( EXTRACHILL_ANALYTICS_EMAIL_CLEANUP_HOOK, 'extrachill_analytics_clean
 add_action( EXTRACHILL_ANALYTICS_EMAIL_CLEANUP_CONTINUE, 'extrachill_analytics_cleanup_email_events' );
 
 /**
- * Atomically replace the exact stale lock observed by this worker.
+ * Acquire the network-scoped cleanup mutex without waiting.
  *
- * @param array $expected_lock    Exact lock value previously observed.
- * @param array $replacement_lock New lock value owned by this worker.
- * @return bool Whether the conditional replacement succeeded.
+ * @param string $lock_name Network-scoped advisory lock name.
+ * @return bool Whether this database connection acquired the lock.
  */
-function extrachill_analytics_compare_and_swap_email_cleanup_lock( $expected_lock, $replacement_lock ) {
+function extrachill_analytics_acquire_email_cleanup_lock( $lock_name ) {
 	global $wpdb;
 
-	$network_id = get_current_network_id();
-	$updated    = $wpdb->query( // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- Atomic compare-and-swap for the plugin-owned network lock.
+	$acquired = $wpdb->get_var( // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- Connection-owned advisory mutex.
 		$wpdb->prepare(
-			"UPDATE {$wpdb->sitemeta} SET meta_value = %s WHERE site_id = %d AND meta_key = %s AND meta_value = %s LIMIT 1", // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Core-owned table name; values are prepared.
-			maybe_serialize( $replacement_lock ),
-			$network_id,
-			EXTRACHILL_ANALYTICS_EMAIL_CLEANUP_LOCK,
-			maybe_serialize( $expected_lock )
+			'SELECT GET_LOCK(%s, 0)',
+			$lock_name
 		)
 	);
 
-	if ( 1 === $updated ) {
-		extrachill_analytics_flush_email_cleanup_lock_cache( $network_id );
-		return true;
-	}
-
-	return false;
+	return '1' === (string) $acquired;
 }
 
 /**
- * Atomically release only the exact lock value owned by this worker.
+ * Release the cleanup mutex owned by this database connection.
  *
- * @param array $ownership_lock Exact lock value owned by this worker.
- * @return bool Whether the conditional delete succeeded.
+ * @param string $lock_name Network-scoped advisory lock name.
+ * @return bool Whether this connection released the lock.
  */
-function extrachill_analytics_release_email_cleanup_lock( $ownership_lock ) {
+function extrachill_analytics_release_email_cleanup_lock( $lock_name ) {
 	global $wpdb;
 
-	$network_id = get_current_network_id();
-	$deleted    = $wpdb->query( // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- Atomic conditional delete for the plugin-owned network lock.
+	$released = $wpdb->get_var( // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- Connection-owned advisory mutex.
 		$wpdb->prepare(
-			"DELETE FROM {$wpdb->sitemeta} WHERE site_id = %d AND meta_key = %s AND meta_value = %s LIMIT 1", // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Core-owned table name; values are prepared.
-			$network_id,
-			EXTRACHILL_ANALYTICS_EMAIL_CLEANUP_LOCK,
-			maybe_serialize( $ownership_lock )
+			'SELECT RELEASE_LOCK(%s)',
+			$lock_name
 		)
 	);
 
-	if ( 1 === $deleted ) {
-		extrachill_analytics_flush_email_cleanup_lock_cache( $network_id );
-		return true;
-	}
-
-	return false;
+	return '1' === (string) $released;
 }
 
 /**
- * Invalidate Core's network-option cache entries after direct lock mutation.
+ * Persist and log an operational cleanup failure.
  *
- * @param int $network_id Current network ID.
+ * @param string $operation Bounded operation identifier.
+ * @param string $error     Bounded database error.
  */
-function extrachill_analytics_flush_email_cleanup_lock_cache( $network_id ) {
-	wp_cache_delete( $network_id . ':' . EXTRACHILL_ANALYTICS_EMAIL_CLEANUP_LOCK, 'site-options' );
-	wp_cache_delete( $network_id . ':notoptions', 'site-options' );
+function extrachill_analytics_record_email_cleanup_failure( $operation, $error ) {
+	update_site_option(
+		EXTRACHILL_ANALYTICS_EMAIL_CLEANUP_ERROR,
+		array(
+			'operation'   => $operation,
+			'recorded_at' => gmdate( 'Y-m-d H:i:s' ),
+			'error'       => substr( sanitize_text_field( $error ), 0, 500 ),
+		)
+	);
+	error_log( sprintf( '[Extra Chill Analytics] Email cleanup failed during %s: %s', $operation, $error ) ); // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log -- Cron failures must be visible to operators.
 }
 
 /**

@@ -38,8 +38,6 @@ final class EmailTrackingPrivacyTest extends TestCase {
 		$GLOBALS['extrachill_analytics_test_site_transients'] = array();
 		$GLOBALS['extrachill_analytics_test_transient_ttls']  = array();
 		$GLOBALS['extrachill_analytics_test_user']            = (object) array( 'ID' => 42 );
-		$GLOBALS['extrachill_analytics_test_uuid4']           = array( 'worker-token' );
-		$GLOBALS['extrachill_analytics_test_cache_deletes']   = array();
 	}
 
 	/**
@@ -125,109 +123,49 @@ final class EmailTrackingPrivacyTest extends TestCase {
 	public function test_cleanup_schedules_bounded_continuation_and_prevents_overlap(): void {
 		global $wpdb;
 
-		$wpdb->query_results = array( 1000, 25, 0, 1 );
+		$wpdb->var_results   = array( 1, 1 );
+		$wpdb->query_results = array( 1000, 25, 0 );
 		$this->assertTrue( extrachill_analytics_cleanup_email_events() );
-		$this->assertCount( 4, $wpdb->queries );
+		$this->assertCount( 5, $wpdb->queries );
+		$this->assertStringContainsString( "GET_LOCK('extrachill_analytics_email_cleanup_1', 0)", $wpdb->queries[0] );
+		$this->assertStringContainsString( "RELEASE_LOCK('extrachill_analytics_email_cleanup_1')", $wpdb->queries[4] );
 		$this->assertCount( 1, $GLOBALS['extrachill_analytics_test_single'] );
-		$this->assertArrayNotHasKey( EXTRACHILL_ANALYTICS_EMAIL_CLEANUP_LOCK, $GLOBALS['extrachill_analytics_test_site_options'] );
-		$this->assertCount( 2, $GLOBALS['extrachill_analytics_test_cache_deletes'] );
 
-		$wpdb->queries = array();
-		$GLOBALS['extrachill_analytics_test_site_options'][ EXTRACHILL_ANALYTICS_EMAIL_CLEANUP_LOCK ] = array(
-			'token'       => 'active-worker',
-			'acquired_at' => time(),
-		);
+		$wpdb->queries     = array();
+		$wpdb->var_results = array( 0 );
 		$this->assertFalse( extrachill_analytics_cleanup_email_events() );
-		$this->assertSame( array(), $wpdb->queries );
-	}
-
-	/**
-	 * Replacement between stale-lock read and update makes takeover fail closed.
-	 */
-	public function test_stale_lock_takeover_is_atomic_against_replacement(): void {
-		global $wpdb;
-
-		$stale_lock = array(
-			'token'       => 'stale-worker',
-			'acquired_at' => time() - ( 11 * MINUTE_IN_SECONDS ),
-		);
-		$GLOBALS['extrachill_analytics_test_site_options'][ EXTRACHILL_ANALYTICS_EMAIL_CLEANUP_LOCK ] = $stale_lock;
-		$wpdb->query_results          = array( 0 );
-		$wpdb->before_query_callbacks = array(
-			function () {
-				$GLOBALS['extrachill_analytics_test_site_options'][ EXTRACHILL_ANALYTICS_EMAIL_CLEANUP_LOCK ] = array(
-					'token'       => 'replacement-worker',
-					'acquired_at' => time(),
-				);
-			},
-		);
-
-		$this->assertFalse( extrachill_analytics_cleanup_email_events() );
-		$this->assertSame( 'replacement-worker', $GLOBALS['extrachill_analytics_test_site_options'][ EXTRACHILL_ANALYTICS_EMAIL_CLEANUP_LOCK ]['token'] );
 		$this->assertCount( 1, $wpdb->queries );
-		$this->assertStringContainsString( 'UPDATE wp_sitemeta SET meta_value', $wpdb->queries[0] );
-		$this->assertStringContainsString( addslashes( maybe_serialize( $stale_lock ) ), $wpdb->queries[0] );
-		$this->assertSame( array(), $GLOBALS['extrachill_analytics_test_cache_deletes'] );
 	}
 
 	/**
-	 * Successful conditional takeover invalidates Core's network-option caches.
+	 * Advisory lock acquisition failures surface and schedule a retry.
 	 */
-	public function test_successful_atomic_takeover_flushes_network_option_cache(): void {
+	public function test_advisory_lock_acquisition_failure_is_reported(): void {
 		global $wpdb;
 
-		$expected            = array(
-			'token'       => 'stale-worker',
-			'acquired_at' => 1,
-		);
-		$replacement         = array(
-			'token'       => 'new-worker',
-			'acquired_at' => 2,
-		);
-		$wpdb->query_results = array( 1 );
+		$wpdb->var_results = array( null );
+		$wpdb->var_errors  = array( 'GET_LOCK unavailable' );
 
-		$this->assertTrue( extrachill_analytics_compare_and_swap_email_cleanup_lock( $expected, $replacement ) );
-		$this->assertSame(
-			array(
-				array(
-					'key'   => '1:' . EXTRACHILL_ANALYTICS_EMAIL_CLEANUP_LOCK,
-					'group' => 'site-options',
-				),
-				array(
-					'key'   => '1:notoptions',
-					'group' => 'site-options',
-				),
-			),
-			$GLOBALS['extrachill_analytics_test_cache_deletes']
-		);
+		$this->assertFalse( extrachill_analytics_cleanup_email_events() );
+		$this->assertSame( 'lock_acquire', $GLOBALS['extrachill_analytics_test_site_options'][ EXTRACHILL_ANALYTICS_EMAIL_CLEANUP_ERROR ]['operation'] );
+		$this->assertSame( 'GET_LOCK unavailable', $GLOBALS['extrachill_analytics_test_site_options'][ EXTRACHILL_ANALYTICS_EMAIL_CLEANUP_ERROR ]['error'] );
+		$this->assertCount( 1, $GLOBALS['extrachill_analytics_test_single'] );
 	}
 
 	/**
-	 * Replacement immediately before conditional delete makes release fail.
+	 * Release failure is reported even when the bounded batch succeeds.
 	 */
-	public function test_release_is_atomic_against_replacement(): void {
+	public function test_advisory_lock_release_failure_is_reported(): void {
 		global $wpdb;
 
-		$owned_lock = array(
-			'token'       => 'worker-token',
-			'acquired_at' => time(),
-		);
-		$GLOBALS['extrachill_analytics_test_site_options'][ EXTRACHILL_ANALYTICS_EMAIL_CLEANUP_LOCK ] = $owned_lock;
-		$wpdb->query_results          = array( 0 );
-		$wpdb->before_query_callbacks = array(
-			function () {
-				$GLOBALS['extrachill_analytics_test_site_options'][ EXTRACHILL_ANALYTICS_EMAIL_CLEANUP_LOCK ] = array(
-					'token'       => 'replacement-worker',
-					'acquired_at' => time(),
-				);
-			},
-		);
+		$wpdb->var_results   = array( 1, null );
+		$wpdb->var_errors    = array( '', 'RELEASE_LOCK failed' );
+		$wpdb->query_results = array( 0, 0, 0 );
 
-		$this->assertFalse( extrachill_analytics_release_email_cleanup_lock( $owned_lock ) );
-		$this->assertSame( 'replacement-worker', $GLOBALS['extrachill_analytics_test_site_options'][ EXTRACHILL_ANALYTICS_EMAIL_CLEANUP_LOCK ]['token'] );
-		$this->assertStringContainsString( 'DELETE FROM wp_sitemeta', $wpdb->queries[0] );
-		$this->assertStringContainsString( addslashes( maybe_serialize( $owned_lock ) ), $wpdb->queries[0] );
-		$this->assertSame( array(), $GLOBALS['extrachill_analytics_test_cache_deletes'] );
+		$this->assertFalse( extrachill_analytics_cleanup_email_events() );
+		$this->assertSame( 'lock_release', $GLOBALS['extrachill_analytics_test_site_options'][ EXTRACHILL_ANALYTICS_EMAIL_CLEANUP_ERROR ]['operation'] );
+		$this->assertSame( 'RELEASE_LOCK failed', $GLOBALS['extrachill_analytics_test_site_options'][ EXTRACHILL_ANALYTICS_EMAIL_CLEANUP_ERROR ]['error'] );
+		$this->assertCount( 1, $GLOBALS['extrachill_analytics_test_single'] );
 	}
 
 	/**
@@ -236,14 +174,16 @@ final class EmailTrackingPrivacyTest extends TestCase {
 	public function test_cleanup_surfaces_failures(): void {
 		global $wpdb;
 
-		$wpdb->query_results = array( false, 0, 0, 1 );
-		$wpdb->query_errors  = array( 'first query failure', '', '', '' );
+		$wpdb->var_results   = array( 1, 1 );
+		$wpdb->query_results = array( false, 0, 0 );
+		$wpdb->query_errors  = array( 'first query failure', '', '' );
 
 		$this->assertFalse( extrachill_analytics_cleanup_email_events() );
 		$this->assertSame( 'expired_delete', $GLOBALS['extrachill_analytics_test_site_options'][ EXTRACHILL_ANALYTICS_EMAIL_CLEANUP_ERROR ]['operation'] );
 		$this->assertSame( '', $wpdb->last_error );
 		$this->assertSame( 'first query failure', $GLOBALS['extrachill_analytics_test_site_options'][ EXTRACHILL_ANALYTICS_EMAIL_CLEANUP_ERROR ]['error'] );
 		$this->assertCount( 1, $GLOBALS['extrachill_analytics_test_single'] );
+		$this->assertStringContainsString( 'RELEASE_LOCK', $wpdb->queries[4] );
 	}
 
 	/**

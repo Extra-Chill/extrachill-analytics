@@ -10,13 +10,6 @@
  */
 final class Email_Privacy_Wpdb_Fixture {
 	/**
-	 * Core network-option table name.
-	 *
-	 * @var string
-	 */
-	public $sitemeta = 'wp_sitemeta';
-
-	/**
 	 * Configured mutation results.
 	 *
 	 * @var array<int, int|false>
@@ -31,20 +24,6 @@ final class Email_Privacy_Wpdb_Fixture {
 	public $query_errors = array();
 
 	/**
-	 * Per-query callbacks used to simulate concurrent lock replacement.
-	 *
-	 * @var callable[]
-	 */
-	public $query_callbacks = array();
-
-	/**
-	 * Callbacks run immediately before a conditional SQL mutation.
-	 *
-	 * @var callable[]
-	 */
-	public $before_query_callbacks = array();
-
-	/**
 	 * Configured result pages.
 	 *
 	 * @var array<int, array<object>>
@@ -57,6 +36,20 @@ final class Email_Privacy_Wpdb_Fixture {
 	 * @var int
 	 */
 	public $max_id = 0;
+
+	/**
+	 * Configured scalar results for advisory-lock queries.
+	 *
+	 * @var array<int, int|string|null>
+	 */
+	public $var_results = array();
+
+	/**
+	 * Per-scalar-query database errors.
+	 *
+	 * @var string[]
+	 */
+	public $var_errors = array();
 
 	/**
 	 * Captured prepared queries.
@@ -98,22 +91,9 @@ final class Email_Privacy_Wpdb_Fixture {
 	 * @return int|false
 	 */
 	public function query( $query ) {
-		$before_query = array_shift( $this->before_query_callbacks );
-		if ( is_callable( $before_query ) ) {
-			$before_query();
-		}
-
 		$this->queries[]  = $query;
 		$this->last_error = (string) array_shift( $this->query_errors );
-		$callback         = array_shift( $this->query_callbacks );
-		if ( is_callable( $callback ) ) {
-			$callback();
-		}
-		$result = array_shift( $this->query_results );
-		if ( 1 === $result && 0 === strpos( $query, 'DELETE FROM wp_sitemeta' ) ) {
-			unset( $GLOBALS['extrachill_analytics_test_site_options'][ EXTRACHILL_ANALYTICS_EMAIL_CLEANUP_LOCK ] );
-		}
-		return $result;
+		return array_shift( $this->query_results );
 	}
 
 	/**
@@ -123,7 +103,11 @@ final class Email_Privacy_Wpdb_Fixture {
 	 * @return int
 	 */
 	public function get_var( $query ) {
-		$this->queries[] = $query;
+		$this->queries[]  = $query;
+		$this->last_error = (string) array_shift( $this->var_errors );
+		if ( $this->var_results ) {
+			return array_shift( $this->var_results );
+		}
 		return $this->max_id;
 	}
 

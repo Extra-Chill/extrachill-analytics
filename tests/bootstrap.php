@@ -338,16 +338,6 @@ if ( ! function_exists( 'wp_salt' ) ) {
 		return 'email-privacy-test-salt';
 	}
 }
-if ( ! function_exists( 'wp_generate_uuid4' ) ) {
-	/**
-	 * Return a deterministic ownership token fixture.
-	 *
-	 * @return string
-	 */
-	function wp_generate_uuid4() {
-		return array_shift( $GLOBALS['extrachill_analytics_test_uuid4'] );
-	}
-}
 if ( ! function_exists( 'get_current_network_id' ) ) {
 	/**
 	 * Return the authoritative network ID fixture.
@@ -356,30 +346,6 @@ if ( ! function_exists( 'get_current_network_id' ) ) {
 	 */
 	function get_current_network_id() {
 		return 1;
-	}
-}
-if ( ! function_exists( 'maybe_serialize' ) ) {
-	/**
-	 * Serialize arrays like Core's network-option storage.
-	 *
-	 * @param mixed $value Value to serialize when needed.
-	 * @return mixed
-	 */
-	function maybe_serialize( $value ) {
-		return is_array( $value ) || is_object( $value ) ? serialize( $value ) : $value; // phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions.serialize_serialize -- Mirrors Core option storage in the test harness.
-	}
-}
-if ( ! function_exists( 'wp_cache_delete' ) ) {
-	/**
-	 * Record cache invalidation calls.
-	 *
-	 * @param string $key   Cache key.
-	 * @param string $group Cache group.
-	 * @return bool
-	 */
-	function wp_cache_delete( $key, $group = '' ) { // phpcs:ignore Generic.CodeAnalysis.UnusedFunctionParameter.FoundAfterLastUsed -- compact() captures both parameters below.
-		$GLOBALS['extrachill_analytics_test_cache_deletes'][] = compact( 'key', 'group' );
-		return true;
 	}
 }
 if ( ! function_exists( 'sanitize_text_field' ) ) {
