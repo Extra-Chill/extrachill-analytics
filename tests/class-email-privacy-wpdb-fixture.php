@@ -17,6 +17,20 @@ final class Email_Privacy_Wpdb_Fixture {
 	public $query_results = array();
 
 	/**
+	 * Per-query database errors, including empty success values.
+	 *
+	 * @var string[]
+	 */
+	public $query_errors = array();
+
+	/**
+	 * Per-query callbacks used to simulate concurrent lock replacement.
+	 *
+	 * @var callable[]
+	 */
+	public $query_callbacks = array();
+
+	/**
 	 * Configured result pages.
 	 *
 	 * @var array<int, array<object>>
@@ -70,7 +84,12 @@ final class Email_Privacy_Wpdb_Fixture {
 	 * @return int|false
 	 */
 	public function query( $query ) {
-		$this->queries[] = $query;
+		$this->queries[]  = $query;
+		$this->last_error = (string) array_shift( $this->query_errors );
+		$callback         = array_shift( $this->query_callbacks );
+		if ( is_callable( $callback ) ) {
+			$callback();
+		}
 		return array_shift( $this->query_results );
 	}
 

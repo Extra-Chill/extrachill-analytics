@@ -338,6 +338,16 @@ if ( ! function_exists( 'wp_salt' ) ) {
 		return 'email-privacy-test-salt';
 	}
 }
+if ( ! function_exists( 'wp_generate_uuid4' ) ) {
+	/**
+	 * Return a deterministic ownership token fixture.
+	 *
+	 * @return string
+	 */
+	function wp_generate_uuid4() {
+		return array_shift( $GLOBALS['extrachill_analytics_test_uuid4'] );
+	}
+}
 if ( ! function_exists( 'sanitize_text_field' ) ) {
 	/**
 	 * Stub for sanitize_text_field().

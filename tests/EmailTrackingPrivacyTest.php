@@ -38,6 +38,7 @@ final class EmailTrackingPrivacyTest extends TestCase {
 		$GLOBALS['extrachill_analytics_test_site_transients'] = array();
 		$GLOBALS['extrachill_analytics_test_transient_ttls']  = array();
 		$GLOBALS['extrachill_analytics_test_user']            = (object) array( 'ID' => 42 );
+		$GLOBALS['extrachill_analytics_test_uuid4']           = array( 'worker-token' );
 	}
 
 	/**
@@ -130,9 +131,53 @@ final class EmailTrackingPrivacyTest extends TestCase {
 		$this->assertArrayNotHasKey( EXTRACHILL_ANALYTICS_EMAIL_CLEANUP_LOCK, $GLOBALS['extrachill_analytics_test_site_options'] );
 
 		$wpdb->queries = array();
-		$GLOBALS['extrachill_analytics_test_site_options'][ EXTRACHILL_ANALYTICS_EMAIL_CLEANUP_LOCK ] = time();
+		$GLOBALS['extrachill_analytics_test_site_options'][ EXTRACHILL_ANALYTICS_EMAIL_CLEANUP_LOCK ] = array(
+			'token'       => 'active-worker',
+			'acquired_at' => time(),
+		);
 		$this->assertFalse( extrachill_analytics_cleanup_email_events() );
 		$this->assertSame( array(), $wpdb->queries );
+	}
+
+	/**
+	 * Stale takeover acquires a new token before destructive work begins.
+	 */
+	public function test_stale_lock_takeover_uses_new_ownership_token(): void {
+		global $wpdb;
+
+		$GLOBALS['extrachill_analytics_test_site_options'][ EXTRACHILL_ANALYTICS_EMAIL_CLEANUP_LOCK ] = array(
+			'token'       => 'stale-worker',
+			'acquired_at' => time() - ( 11 * MINUTE_IN_SECONDS ),
+		);
+		$wpdb->query_results   = array( 0, 0, 0 );
+		$wpdb->query_callbacks = array(
+			function () {
+				$this->assertSame( 'worker-token', $GLOBALS['extrachill_analytics_test_site_options'][ EXTRACHILL_ANALYTICS_EMAIL_CLEANUP_LOCK ]['token'] );
+			},
+		);
+
+		$this->assertTrue( extrachill_analytics_cleanup_email_events() );
+		$this->assertArrayNotHasKey( EXTRACHILL_ANALYTICS_EMAIL_CLEANUP_LOCK, $GLOBALS['extrachill_analytics_test_site_options'] );
+	}
+
+	/**
+	 * A stale worker cannot release a replacement worker's token.
+	 */
+	public function test_cleanup_releases_only_its_owned_token(): void {
+		global $wpdb;
+
+		$wpdb->query_results   = array( 0, 0, 0 );
+		$wpdb->query_callbacks = array(
+			function () {
+				$GLOBALS['extrachill_analytics_test_site_options'][ EXTRACHILL_ANALYTICS_EMAIL_CLEANUP_LOCK ] = array(
+					'token'       => 'replacement-worker',
+					'acquired_at' => time(),
+				);
+			},
+		);
+
+		$this->assertTrue( extrachill_analytics_cleanup_email_events() );
+		$this->assertSame( 'replacement-worker', $GLOBALS['extrachill_analytics_test_site_options'][ EXTRACHILL_ANALYTICS_EMAIL_CLEANUP_LOCK ]['token'] );
 	}
 
 	/**
@@ -142,11 +187,12 @@ final class EmailTrackingPrivacyTest extends TestCase {
 		global $wpdb;
 
 		$wpdb->query_results = array( false, 0, 0 );
-		$wpdb->last_error    = 'fixture database failure';
+		$wpdb->query_errors  = array( 'first query failure', '', '' );
 
 		$this->assertFalse( extrachill_analytics_cleanup_email_events() );
 		$this->assertSame( 'expired_delete', $GLOBALS['extrachill_analytics_test_site_options'][ EXTRACHILL_ANALYTICS_EMAIL_CLEANUP_ERROR ]['operation'] );
-		$this->assertSame( 'fixture database failure', $GLOBALS['extrachill_analytics_test_site_options'][ EXTRACHILL_ANALYTICS_EMAIL_CLEANUP_ERROR ]['error'] );
+		$this->assertSame( '', $wpdb->last_error );
+		$this->assertSame( 'first query failure', $GLOBALS['extrachill_analytics_test_site_options'][ EXTRACHILL_ANALYTICS_EMAIL_CLEANUP_ERROR ]['error'] );
 		$this->assertCount( 1, $GLOBALS['extrachill_analytics_test_single'] );
 	}
 

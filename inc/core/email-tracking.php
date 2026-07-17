@@ -110,23 +110,38 @@ function extrachill_analytics_cleanup_email_events() {
 		return false;
 	}
 
-	$lock_time = (int) get_site_option( EXTRACHILL_ANALYTICS_EMAIL_CLEANUP_LOCK, 0 );
-	if ( $lock_time && ( time() - $lock_time ) < ( 10 * MINUTE_IN_SECONDS ) ) {
+	$lock       = get_site_option( EXTRACHILL_ANALYTICS_EMAIL_CLEANUP_LOCK, array() );
+	$lock_token = is_array( $lock ) && isset( $lock['token'] ) ? (string) $lock['token'] : '';
+	$lock_time  = is_array( $lock ) && isset( $lock['acquired_at'] ) ? (int) $lock['acquired_at'] : 0;
+	if ( $lock_token && ( time() - $lock_time ) < ( 10 * MINUTE_IN_SECONDS ) ) {
 		return false;
 	}
 
-	if ( $lock_time ) {
+	if ( $lock_token ) {
+		$current_lock = get_site_option( EXTRACHILL_ANALYTICS_EMAIL_CLEANUP_LOCK, array() );
+		if ( ! is_array( $current_lock ) || ! isset( $current_lock['token'] ) || $lock_token !== $current_lock['token'] ) {
+			return false;
+		}
 		delete_site_option( EXTRACHILL_ANALYTICS_EMAIL_CLEANUP_LOCK );
 	}
 
-	if ( ! add_site_option( EXTRACHILL_ANALYTICS_EMAIL_CLEANUP_LOCK, time() ) ) {
+	$ownership_token = wp_generate_uuid4();
+	if (
+		! add_site_option(
+			EXTRACHILL_ANALYTICS_EMAIL_CLEANUP_LOCK,
+			array(
+				'token'       => $ownership_token,
+				'acquired_at' => time(),
+			)
+		)
+	) {
 		return false;
 	}
 
 	$table  = extrachill_analytics_events_table();
 	$cutoff = gmdate( 'Y-m-d H:i:s', time() - ( EXTRACHILL_ANALYTICS_EMAIL_EVENT_RETENTION_DAYS * DAY_IN_SECONDS ) );
 
-	$expired = $wpdb->query( // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- Bounded maintenance query against the plugin-owned analytics table.
+	$expired       = $wpdb->query( // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- Bounded maintenance query against the plugin-owned analytics table.
 		$wpdb->prepare(
 			"DELETE FROM {$table} WHERE event_type IN (%s, %s) AND created_at < %s ORDER BY id ASC LIMIT %d", // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Code-defined table name; values are prepared.
 			'email_sent',
@@ -135,8 +150,9 @@ function extrachill_analytics_cleanup_email_events() {
 			EXTRACHILL_ANALYTICS_EMAIL_CLEANUP_BATCH_SIZE
 		)
 	);
+	$expired_error = false === $expired ? (string) $wpdb->last_error : '';
 
-	$scrubbed = $wpdb->query( // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- Bounded maintenance query against the plugin-owned analytics table.
+	$scrubbed       = $wpdb->query( // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- Bounded maintenance query against the plugin-owned analytics table.
 		$wpdb->prepare(
 			"UPDATE {$table} SET event_data = JSON_REMOVE(event_data, '$.to', '$.subject', '$.error') WHERE event_type IN (%s, %s) AND JSON_VALID(event_data) = 1 AND (JSON_EXTRACT(event_data, '$.to') IS NOT NULL OR JSON_EXTRACT(event_data, '$.subject') IS NOT NULL OR JSON_EXTRACT(event_data, '$.error') IS NOT NULL) ORDER BY id ASC LIMIT %d", // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Code-defined table name; values are prepared.
 			'email_sent',
@@ -144,9 +160,10 @@ function extrachill_analytics_cleanup_email_events() {
 			EXTRACHILL_ANALYTICS_EMAIL_CLEANUP_BATCH_SIZE
 		)
 	);
+	$scrubbed_error = false === $scrubbed ? (string) $wpdb->last_error : '';
 
 	// Invalid legacy payloads cannot be safely scrubbed, so remove those rows.
-	$invalid = $wpdb->query( // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- Bounded maintenance query against the plugin-owned analytics table.
+	$invalid       = $wpdb->query( // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- Bounded maintenance query against the plugin-owned analytics table.
 		$wpdb->prepare(
 			"DELETE FROM {$table} WHERE event_type IN (%s, %s) AND JSON_VALID(event_data) = 0 ORDER BY id ASC LIMIT %d", // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Code-defined table name; values are prepared.
 			'email_sent',
@@ -154,6 +171,7 @@ function extrachill_analytics_cleanup_email_events() {
 			EXTRACHILL_ANALYTICS_EMAIL_CLEANUP_BATCH_SIZE
 		)
 	);
+	$invalid_error = false === $invalid ? (string) $wpdb->last_error : '';
 
 	$results = array(
 		'expired_delete' => $expired,
@@ -161,9 +179,14 @@ function extrachill_analytics_cleanup_email_events() {
 		'invalid_delete' => $invalid,
 	);
 	$failed  = array_search( false, $results, true );
+	$errors  = array(
+		'expired_delete' => $expired_error,
+		'legacy_scrub'   => $scrubbed_error,
+		'invalid_delete' => $invalid_error,
+	);
 
 	if ( false !== $failed ) {
-		$error = substr( sanitize_text_field( (string) $wpdb->last_error ), 0, 500 );
+		$error = substr( sanitize_text_field( $errors[ $failed ] ), 0, 500 );
 		update_site_option(
 			EXTRACHILL_ANALYTICS_EMAIL_CLEANUP_ERROR,
 			array(
@@ -177,7 +200,7 @@ function extrachill_analytics_cleanup_email_events() {
 		delete_site_option( EXTRACHILL_ANALYTICS_EMAIL_CLEANUP_ERROR );
 	}
 
-	delete_site_option( EXTRACHILL_ANALYTICS_EMAIL_CLEANUP_LOCK );
+	extrachill_analytics_release_email_cleanup_lock( $ownership_token );
 
 	if ( false !== $failed || in_array( EXTRACHILL_ANALYTICS_EMAIL_CLEANUP_BATCH_SIZE, $results, true ) ) {
 		extrachill_analytics_schedule_email_cleanup_continuation();
@@ -187,6 +210,18 @@ function extrachill_analytics_cleanup_email_events() {
 }
 add_action( EXTRACHILL_ANALYTICS_EMAIL_CLEANUP_HOOK, 'extrachill_analytics_cleanup_email_events' );
 add_action( EXTRACHILL_ANALYTICS_EMAIL_CLEANUP_CONTINUE, 'extrachill_analytics_cleanup_email_events' );
+
+/**
+ * Release the cleanup lock only when this worker still owns it.
+ *
+ * @param string $ownership_token This worker's lock token.
+ */
+function extrachill_analytics_release_email_cleanup_lock( $ownership_token ) {
+	$lock = get_site_option( EXTRACHILL_ANALYTICS_EMAIL_CLEANUP_LOCK, array() );
+	if ( is_array( $lock ) && isset( $lock['token'] ) && $ownership_token === $lock['token'] ) {
+		delete_site_option( EXTRACHILL_ANALYTICS_EMAIL_CLEANUP_LOCK );
+	}
+}
 
 /**
  * Queue the next bounded cleanup batch without duplicating continuations.
