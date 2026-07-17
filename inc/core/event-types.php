@@ -33,11 +33,78 @@
 defined( 'ABSPATH' ) || exit;
 
 /**
- * Pageview event — one row per real (non-bot) front-end singular view, carrying
- * the anonymous first-party visitor_id when present. This is the deterministic
- * per-visitor history the retention rollups read.
+ * Pageview event — one row per real (non-bot) front-end view, carrying the
+ * anonymous first-party visitor_id when present. Payload fields are post_id,
+ * route_family, view_kind, referrer_host, and the server-owned is_bot verdict.
+ * This is the deterministic per-visitor history the retention rollups read.
  */
 const EC_ANALYTICS_EVENT_PAGEVIEW = 'pageview';
+
+/**
+ * Active platform event contracts.
+ *
+ * These names are emitted in production and consumed by first-party reports.
+ * Server-owned emitters keep using the flexible track-event ability, but MUST
+ * limit payloads to the documented fields and preserve the existing privacy
+ * behavior:
+ *
+ * - user_registration: user_id, source, method, referrer, utm.
+ * - newsletter_signup: context, list_id.
+ * - search: search_term, result_count; source and is_bot are server stamps.
+ * - search_attack: the search fields plus classification, pattern_family,
+ *   matched_token, ip, user_agent, and is_bot security diagnostics.
+ * - 404_error: requested_url, referer, user_agent, ip_hash, is_bot.
+ * - email_sent: recipient_count, context, is_bot.
+ * - email_failed: recipient_count, context, error_code, is_bot.
+ * - redirect_fire: rule_id, from_url, to_url, dest_host, dest_path, is_bot.
+ *
+ * Registration and newsletter payloads are intentionally documented rather
+ * than enforced here: their trusted server emitters need the existing flexible
+ * ability contract, including additive attribution fields.
+ */
+const EC_ANALYTICS_EVENT_USER_REGISTRATION = 'user_registration';
+const EC_ANALYTICS_EVENT_NEWSLETTER_SIGNUP = 'newsletter_signup';
+const EC_ANALYTICS_EVENT_SEARCH            = 'search';
+const EC_ANALYTICS_EVENT_SEARCH_ATTACK     = 'search_attack';
+const EC_ANALYTICS_EVENT_404_ERROR         = '404_error';
+const EC_ANALYTICS_EVENT_EMAIL_SENT        = 'email_sent';
+const EC_ANALYTICS_EVENT_EMAIL_FAILED      = 'email_failed';
+const EC_ANALYTICS_EVENT_REDIRECT_FIRE     = 'redirect_fire';
+
+/**
+ * Public browser-adapter event contracts.
+ *
+ * These payloads cross unauthenticated REST adapters before reaching the
+ * track-event ability, so write-integrity.php enforces the listed fields and
+ * bounds. `is_bot` is always server-owned and removed from browser input.
+ *
+ * - share_click: destination, share_url.
+ * - bridge_click / bridge_impression: dest_site, source_post, source_site, term.
+ * - outbound_click: dest_host, dest_url, category.
+ * - experiment_assignment / experiment_exposure: experiment_key, variant,
+ *   surface. Assignment records allocation; exposure records actual viewport
+ *   visibility. They are distinct events and neither implies the other.
+ */
+const EC_ANALYTICS_EVENT_SHARE_CLICK           = 'share_click';
+const EC_ANALYTICS_EVENT_BRIDGE_CLICK          = 'bridge_click';
+const EC_ANALYTICS_EVENT_BRIDGE_IMPRESSION     = 'bridge_impression';
+const EC_ANALYTICS_EVENT_OUTBOUND_CLICK        = 'outbound_click';
+const EC_ANALYTICS_EVENT_EXPERIMENT_ASSIGNMENT = 'experiment_assignment';
+const EC_ANALYTICS_EVENT_EXPERIMENT_EXPOSURE   = 'experiment_exposure';
+
+/**
+ * Browser-originated events admitted by the public adapter boundary.
+ *
+ * @var string[]
+ */
+const EC_ANALYTICS_PUBLIC_BROWSER_EVENTS = array(
+	EC_ANALYTICS_EVENT_SHARE_CLICK,
+	EC_ANALYTICS_EVENT_BRIDGE_CLICK,
+	EC_ANALYTICS_EVENT_BRIDGE_IMPRESSION,
+	EC_ANALYTICS_EVENT_OUTBOUND_CLICK,
+	EC_ANALYTICS_EVENT_EXPERIMENT_ASSIGNMENT,
+	EC_ANALYTICS_EVENT_EXPERIMENT_EXPOSURE,
+);
 
 /** Team-experience events (team membership + Studio + Roadie usage). */
 const EC_ANALYTICS_EVENT_TEAM_MEMBER_ADDED        = 'team_member_added';

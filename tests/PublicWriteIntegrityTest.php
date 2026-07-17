@@ -9,6 +9,7 @@ use PHPUnit\Framework\TestCase;
 
 require_once dirname( __DIR__ ) . '/inc/core/route-classifier.php';
 require_once dirname( __DIR__ ) . '/inc/core/assets.php';
+require_once dirname( __DIR__ ) . '/inc/core/event-types.php';
 require_once dirname( __DIR__ ) . '/inc/core/write-integrity.php';
 require_once dirname( __DIR__ ) . '/inc/core/abilities.php';
 require_once dirname( __DIR__ ) . '/inc/core/abilities/track-page-view.php';
@@ -159,6 +160,24 @@ final class PublicWriteIntegrityTest extends TestCase {
 	}
 
 	/**
+	 * Optional adapter fields retain their existing null compatibility.
+	 */
+	public function test_public_event_accepts_null_optional_field(): void {
+		$result = extrachill_analytics_validate_public_event_write(
+			EC_ANALYTICS_EVENT_OUTBOUND_CLICK,
+			array(
+				'dest_host' => 'tickets.example',
+				'dest_url'  => null,
+				'category'  => 'ticketing',
+			),
+			'/story/'
+		);
+
+		$this->assertIsArray( $result );
+		$this->assertNull( $result['event_data']['dest_url'] );
+	}
+
+	/**
 	 * A source post cannot be attached to a different page path.
 	 */
 	public function test_public_event_rejects_source_post_mismatch(): void {
@@ -228,6 +247,83 @@ final class PublicWriteIntegrityTest extends TestCase {
 		$result = extrachill_analytics_validate_public_event_write( 'user_registration', array( 'method' => 'form' ), '/register/' );
 
 		$this->assertSame( '/register/', $result['source_url'] );
+	}
+
+	/**
+	 * Assignment and actual viewport exposure remain separate accepted events.
+	 *
+	 * @dataProvider experiment_event_provider
+	 *
+	 * @param string $event_type Canonical experiment event.
+	 * @param string $variant    Canonical experiment variant.
+	 */
+	public function test_experiment_contract_accepts_control_and_treatment( $event_type, $variant ): void {
+		$result = extrachill_analytics_validate_public_event_write(
+			$event_type,
+			array(
+				'experiment_key' => 'geographic_bridge',
+				'variant'        => $variant,
+				'surface'        => 'single_post_bridge',
+			),
+			'/story/'
+		);
+
+		$this->assertIsArray( $result );
+		$this->assertSame( $variant, $result['event_data']['variant'] );
+	}
+
+	/**
+	 * Canonical experiment event/variant pairs.
+	 *
+	 * @return array<string,array{string,string}>
+	 */
+	public function experiment_event_provider() {
+		return array(
+			'assigned control'  => array( EC_ANALYTICS_EVENT_EXPERIMENT_ASSIGNMENT, 'control' ),
+			'exposed treatment' => array( EC_ANALYTICS_EVENT_EXPERIMENT_EXPOSURE, 'treatment' ),
+		);
+	}
+
+	/**
+	 * Public adapters reject fields that could create unbounded dimensions.
+	 *
+	 * @dataProvider unbounded_public_payload_provider
+	 *
+	 * @param string $event_type Event type.
+	 * @param array  $event_data Public dimensions.
+	 */
+	public function test_public_event_rejects_unbounded_or_unknown_values( $event_type, $event_data ): void {
+		$result = extrachill_analytics_validate_public_event_write( $event_type, $event_data, '/story/' );
+
+		$this->assertInstanceOf( WP_Error::class, $result );
+		$this->assertSame( 'invalid_event_field', $result->code );
+	}
+
+	/**
+	 * Invalid public dimensions.
+	 *
+	 * @return array<string,array{string,array}>
+	 */
+	public function unbounded_public_payload_provider() {
+		$experiment = array(
+			'experiment_key' => 'geographic_bridge',
+			'variant'        => 'control',
+			'surface'        => 'single_post_bridge',
+		);
+
+		return array(
+			'unbounded experiment key' => array( EC_ANALYTICS_EVENT_EXPERIMENT_ASSIGNMENT, array_merge( $experiment, array( 'experiment_key' => str_repeat( 'x', 65 ) ) ) ),
+			'unknown variant'          => array( EC_ANALYTICS_EVENT_EXPERIMENT_EXPOSURE, array_merge( $experiment, array( 'variant' => 'challenger' ) ) ),
+			'unbounded surface'        => array( EC_ANALYTICS_EVENT_EXPERIMENT_EXPOSURE, array_merge( $experiment, array( 'surface' => str_repeat( 'x', 65 ) ) ) ),
+			'unbounded bridge term'    => array( EC_ANALYTICS_EVENT_BRIDGE_CLICK, array( 'term' => str_repeat( 'x', 201 ) ) ),
+			'unknown browser field'    => array(
+				EC_ANALYTICS_EVENT_SHARE_CLICK,
+				array(
+					'destination' => 'facebook',
+					'free_form'   => 'nope',
+				),
+			),
+		);
 	}
 
 	/**
