@@ -19,10 +19,10 @@
  * funnel: counting rows instead of people inflates the top of the funnel and
  * makes every downstream conversion % too low.
  *
- * This ability is the funnel's rightful reader: it iterates the ordered
- * `EC_ANALYTICS_ARTIST_ACTIVATION_STEPS` group and counts each step by
- * DISTINCT person, then computes step-to-step and overall conversion plus the
- * single biggest abandon step.
+ * This ability is the funnel's rightful reader: it walks each person's events
+ * in `created_at`, then row-ID order and counts a step only after that person
+ * completed every preceding step. Repeated and out-of-order emits therefore
+ * cannot inflate a downstream population.
  *
  * Friction / anomaly signals
  * --------------------------
@@ -62,7 +62,7 @@ function extrachill_analytics_register_activation_funnel_ability() {
 		'extrachill/get-activation-funnel',
 		array(
 			'label'               => __( 'Get Activation Funnel', 'extrachill-analytics' ),
-			'description'         => __( 'Returns the artist-signup activation funnel as a per-person funnel (DISTINCT user_id/visitor_id) with step-to-step and overall conversion and the biggest abandon step.', 'extrachill-analytics' ),
+			'description'         => __( 'Returns the artist-signup activation funnel as an ordered per-person funnel (user_id with visitor_id fallback) with step-to-step and overall conversion and the biggest abandon step.', 'extrachill-analytics' ),
 			'category'            => 'extrachill-analytics',
 			'input_schema'        => array(
 				'type'       => 'object',
@@ -81,7 +81,7 @@ function extrachill_analytics_register_activation_funnel_ability() {
 			),
 			'output_schema'       => array(
 				'type'        => 'object',
-				'description' => __( 'Object with an ordered steps array (event_type, people, conversion_from_prev, conversion_from_top), the biggest_abandon_step, an anomalies array of friction signals (duplicate profile creation, re-registration attempts) each with DISTINCT people and raw event counts, and the exact UTC window.', 'extrachill-analytics' ),
+				'description' => __( 'Object with a chronologically ordered per-person steps array (event_type, people, conversion_from_prev, conversion_from_top), the biggest_abandon_step, an anomalies array of friction signals (duplicate profile creation, re-registration attempts) each with DISTINCT people and raw event counts, and the exact UTC window.', 'extrachill-analytics' ),
 			),
 			'execute_callback'    => 'extrachill_analytics_ability_get_activation_funnel',
 			'permission_callback' => function () {
@@ -97,6 +97,55 @@ function extrachill_analytics_register_activation_funnel_ability() {
 			),
 		)
 	);
+}
+
+/**
+ * Count ordered funnel progression from a bounded event stream.
+ *
+ * Timestamps establish chronology; the event row ID breaks equal-timestamp
+ * ties, matching the conversion-map stream ordering. A person advances only
+ * when the event is their next required step. Later repeats may still advance
+ * after an earlier out-of-order emit was ignored.
+ *
+ * @param array<object> $rows  Funnel event rows with person_id, event_type, ts, and id.
+ * @param string[]      $steps Required steps in order.
+ * @return int[] Ordered person counts corresponding to $steps.
+ */
+function extrachill_analytics_activation_ordered_counts( $rows, $steps ) {
+	$counts     = array_fill( 0, count( $steps ), 0 );
+	$step_index = array_flip( $steps );
+	$progress   = array();
+
+	usort(
+		$rows,
+		static function ( $left, $right ) {
+			$person_order = strcmp( (string) $left->person_id, (string) $right->person_id );
+			if ( 0 !== $person_order ) {
+				return $person_order;
+			}
+
+			$time_order = (int) $left->ts <=> (int) $right->ts;
+			return 0 !== $time_order ? $time_order : (int) $left->id <=> (int) $right->id;
+		}
+	);
+
+	foreach ( $rows as $row ) {
+		$person_id  = (string) $row->person_id;
+		$event_type = (string) $row->event_type;
+		if ( '' === $person_id || ! isset( $step_index[ $event_type ] ) ) {
+			continue;
+		}
+
+		$next_step = isset( $progress[ $person_id ] ) ? $progress[ $person_id ] : 0;
+		if ( $step_index[ $event_type ] !== $next_step ) {
+			continue;
+		}
+
+		++$counts[ $next_step ];
+		$progress[ $person_id ] = $next_step + 1;
+	}
+
+	return $counts;
 }
 
 /**
@@ -125,8 +174,8 @@ function extrachill_analytics_ability_get_activation_funnel( $input ) {
 	$now_utc = gmdate( 'Y-m-d H:i:s' );
 	$since   = '';
 
-	$window_where  = array();
-	$window_values = array();
+	$window_where  = array( 'created_at <= %s' );
+	$window_values = array( $now_utc );
 
 	if ( $days > 0 ) {
 		$since           = gmdate( 'Y-m-d H:i:s', strtotime( "-{$days} days" ) );
@@ -144,35 +193,33 @@ function extrachill_analytics_ability_get_activation_funnel( $input ) {
 	// person. A row with neither identity is excluded (can't be a "person").
 	$person_key = 'COALESCE(NULLIF(user_id, 0), visitor_id)';
 
-	$step_rows = array();
-	$top_count = 0;
+	$step_placeholders = implode( ', ', array_fill( 0, count( $steps ), '%s' ) );
+	$where             = array_merge(
+		array( "event_type IN ({$step_placeholders})", "{$person_key} IS NOT NULL AND {$person_key} != ''" ),
+		$window_where
+	);
+	$values            = array_merge( array_map( 'sanitize_key', $steps ), $window_values );
+	$where_clause      = implode( ' AND ', $where );
+
+	// Read one bounded stream and enforce progression in row order. The ID is
+	// the deterministic tie-breaker when two events share a stored timestamp.
+	// phpcs:disable WordPress.DB.PreparedSQL, WordPress.DB.DirectDatabaseQuery -- This bounded reporting read has no stable cache key; $sql interpolates only code-defined identifiers and generated placeholders bound via prepare().
+	$sql = "SELECT id, event_type, {$person_key} AS person_id, UNIX_TIMESTAMP(created_at) AS ts
+		FROM {$table}
+		WHERE {$where_clause}
+		ORDER BY person_id ASC, created_at ASC, id ASC";
+
+	$event_rows = $wpdb->get_results( $wpdb->prepare( $sql, $values ) );
+	// phpcs:enable WordPress.DB.PreparedSQL, WordPress.DB.DirectDatabaseQuery
+
+	$ordered_counts = extrachill_analytics_activation_ordered_counts( (array) $event_rows, $steps );
+	$step_rows      = array();
+	$top_count      = isset( $ordered_counts[0] ) ? $ordered_counts[0] : 0;
 
 	foreach ( $steps as $index => $event_type ) {
-		$where  = array( 'event_type = %s', "{$person_key} IS NOT NULL AND {$person_key} != ''" );
-		$values = array( sanitize_key( $event_type ) );
-
-		if ( ! empty( $window_where ) ) {
-			$where  = array_merge( $where, $window_where );
-			$values = array_merge( $values, $window_values );
-		}
-
-		$where_clause = implode( ' AND ', $where );
-
-		// Count DISTINCT people who reached this step — not rows. This is the
-		// whole point: re-views of the form collapse to one person here.
-		// phpcs:disable WordPress.DB.PreparedSQL -- $sql interpolates only code-defined identifiers ($person_key, $table) and a placeholder where_clause bound via prepare().
-		$sql = "SELECT COUNT(DISTINCT {$person_key}) FROM {$table} WHERE {$where_clause}";
-
-		$people = (int) $wpdb->get_var( $wpdb->prepare( $sql, $values ) );
-		// phpcs:enable WordPress.DB.PreparedSQL
-
-		if ( 0 === $index ) {
-			$top_count = $people;
-		}
-
 		$step_rows[] = array(
 			'event_type' => $event_type,
-			'people'     => $people,
+			'people'     => $ordered_counts[ $index ],
 			'index'      => $index,
 		);
 	}
@@ -244,7 +291,7 @@ function extrachill_analytics_ability_get_activation_funnel( $input ) {
 		// Count DISTINCT people who hit this friction signal (people, not rows:
 		// a member who created three duplicate profiles is one thrashing person)
 		// AND the raw row volume (how much thrash that cohort generated).
-		// phpcs:disable WordPress.DB.PreparedSQL -- both queries interpolate only code-defined identifiers and a placeholder where_clause bound via prepare().
+		// phpcs:disable WordPress.DB.PreparedSQL, WordPress.DB.DirectDatabaseQuery -- These bounded reporting reads have no stable cache key; both queries interpolate only code-defined identifiers and a placeholder where_clause bound via prepare().
 		$people_sql = "SELECT COUNT(DISTINCT {$person_key}) FROM {$table} WHERE {$where_clause}";
 		$events_sql = "SELECT COUNT(*) FROM {$table} WHERE {$where_clause}";
 
@@ -253,7 +300,7 @@ function extrachill_analytics_ability_get_activation_funnel( $input ) {
 			'people'     => (int) $wpdb->get_var( $wpdb->prepare( $people_sql, $values ) ),
 			'events'     => (int) $wpdb->get_var( $wpdb->prepare( $events_sql, $values ) ),
 		);
-		// phpcs:enable WordPress.DB.PreparedSQL
+		// phpcs:enable WordPress.DB.PreparedSQL, WordPress.DB.DirectDatabaseQuery
 	}
 
 	return array(
@@ -270,6 +317,6 @@ function extrachill_analytics_ability_get_activation_funnel( $input ) {
 		// same created_at >= since bound used by get-analytics-summary.
 		'since'                => $since,
 		'as_of'                => $now_utc,
-		'note'                 => 'Per-person funnel: each step is COUNT(DISTINCT COALESCE(NULLIF(user_id,0), visitor_id)), so multiple emits per person (e.g. re-views of the create form emitting artist_signup_started) collapse to one. Rows with neither identity are excluded. Counts here are intentionally NOT comparable to get-analytics-summary COUNT(*) raw volume. The anomalies array reports activation friction signals (duplicate profile creation, re-registration attempts) over the same window: people is DISTINCT persons hitting that signal, events is raw row volume.',
+		'note'                 => 'Ordered per-person funnel: identity is COALESCE(NULLIF(user_id,0), visitor_id). Within the bounded UTC window, events are ordered by created_at then event row ID; equal timestamps therefore follow insertion order. A person counts at a step only after completing every prior step, and repeated emits count once. Rows with neither identity are excluded because their progression is unknowable; no identity is inferred. Counts here are intentionally NOT comparable to get-analytics-summary COUNT(*) raw volume. The anomalies array remains independent reach for activation friction signals over the same window: people is DISTINCT persons hitting that signal, events is raw row volume.',
 	);
 }
