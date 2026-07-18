@@ -70,6 +70,39 @@ final class ExperimentSummaryTest extends TestCase {
 		$this->assertStringContainsString( 'not observable', $report['coverage']['gpc_dnt'] );
 	}
 
+	/** Oversized stored versions cannot affect an unfiltered summary or its diagnostics. */
+	public function test_unfiltered_oversized_version_is_fully_rejected(): void {
+		$options                       = $this->options( null );
+		$options['instrumented_types'] = array( 'experiment_assignment', 'experiment_exposure', 'newsletter_signup' );
+		$rows                          = array(
+			$this->row( 1, 'experiment_assignment', 100, 'visitor-control', 0, $this->experiment( 'copy-test', 1, 'control', 'hero' ) ),
+			$this->row( 2, 'newsletter_signup', 110, 'visitor-control' ),
+			$this->row( 3, 'experiment_assignment', 120, 'visitor-oversized', 0, $this->experiment( 'copy-test', 1000001, 'treatment', 'hero' ) ),
+			$this->row( 4, 'experiment_exposure', 130, 'visitor-oversized', 0, $this->experiment( 'copy-test', 1000001, 'treatment', 'hero' ) ),
+			$this->row( 5, 'newsletter_signup', 140, 'visitor-oversized' ),
+		);
+		$report                        = extrachill_analytics_build_experiment_summary( $rows, $options );
+		$control                       = $report['variants'][0];
+		$treatment                     = $report['variants'][1];
+
+		$this->assertFalse( extrachill_analytics_experiment_summary_contract_matches( extrachill_analytics_experiment_normalize_event( $rows[2] ), $options ) );
+		$this->assertSame( 1, $control['assignment']['people'] );
+		$this->assertSame( 1, $control['outcomes']['newsletter_signup']['after_assignment']['people'] );
+		$this->assertSame( 0, $treatment['assignment']['people'] );
+		$this->assertSame( 0, $treatment['exposure']['people'] );
+		$this->assertSame( 0, $treatment['outcomes']['newsletter_signup']['after_assignment']['people'] );
+		$this->assertNull( $treatment['outcomes']['newsletter_signup']['after_assignment']['lift_vs_control']['absolute'] );
+		$this->assertNull( $treatment['outcomes']['newsletter_signup']['after_assignment']['lift_vs_control']['relative'] );
+		$this->assertSame( 'zero_denominator', $treatment['outcomes']['newsletter_signup']['after_assignment']['lift_vs_control']['status'] );
+		$this->assertSame( 2, $report['coverage']['invalid_contract_rows'] );
+		$this->assertSame( 1, $report['coverage']['unattributed_outcome_events'] );
+		$this->assertSame( array( 1 => 1 ), $report['version_diagnostics']['observed_event_rows_by_version'] );
+		$this->assertFalse( $report['version_diagnostics']['mixed_versions_observed'] );
+		$this->assertArrayNotHasKey( 1000001, $report['version_diagnostics']['observed_event_rows_by_version'] );
+		$this->assertSame( 1, $report['coverage']['identified_assignment_people'] );
+		$this->assertSame( 0, $report['coverage']['identified_exposure_people'] );
+	}
+
 	/** Zero denominators and absent instrumentation return null with explicit status. */
 	public function test_zero_denominator_and_no_instrumentation_states(): void {
 		$report    = extrachill_analytics_build_experiment_summary(

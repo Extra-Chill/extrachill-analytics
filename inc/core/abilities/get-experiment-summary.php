@@ -326,6 +326,7 @@ function extrachill_analytics_experiment_summary_contract_matches( $event, $opti
 	return (string) ( $data['experiment_key'] ?? '' ) === (string) $options['experiment_key']
 		&& is_int( $version )
 		&& $version > 0
+		&& $version <= 1000000
 		&& ( null === $options['definition_version'] || $version === $options['definition_version'] )
 		&& extrachill_analytics_experiment_identifier_is_valid( $data['assignment_policy'] ?? null )
 		&& in_array( (string) ( $data['variant'] ?? '' ), $options['variants'], true )
@@ -404,9 +405,11 @@ function extrachill_analytics_build_experiment_summary( $rows, $options ) {
 				continue;
 			}
 			$stored_version = $data['definition_version'] ?? null;
-			if ( is_int( $stored_version ) && $stored_version > 0 ) {
-				$versions[ $stored_version ] = (int) ( $versions[ $stored_version ] ?? 0 ) + 1;
+			if ( ! is_int( $stored_version ) || $stored_version <= 0 || $stored_version > 1000000 ) {
+				++$coverage['invalid_contract_rows'];
+				continue;
 			}
+			$versions[ $stored_version ] = (int) ( $versions[ $stored_version ] ?? 0 ) + 1;
 			if ( null !== $options['definition_version'] && $stored_version !== $options['definition_version'] ) {
 				++$coverage['other_definition_version_rows'];
 				continue;
