@@ -62,10 +62,11 @@ people use identified pageviews and the configured inactivity gap.
 
 Intent-to-treat outcome rates use assigned people. Rate confidence intervals
 are 95% Wilson score intervals. Absolute lift against control uses the
-conservative difference of Wilson bounds. Relative lift uses a log risk-ratio
-interval only when both arms have observed successes. Zero denominators,
-zero-control rates, and insufficient samples return `null` confidence or lift
-values with explicit status. The Ability never declares a winner.
+Newcombe-Wilson hybrid-score difference-of-proportions interval. Relative lift
+uses a Katz log risk-ratio interval only when both arms have nonzero successes
+and nonzero failures. Boundary and otherwise unsupported relative intervals are
+`null` with `insufficient_data`; zero denominators remain explicit. The Ability
+never declares a winner.
 
 Coverage discloses missing instrumentation/no data, truncation, bot and
 unidentified rows, ambiguous visitor IDs, invalid/other experiment rows,

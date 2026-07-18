@@ -179,14 +179,14 @@ function extrachill_analytics_ability_get_experiment_summary( $input ) {
 }
 
 /**
- * Return a 95% Wilson score interval for one binomial proportion.
+ * Return raw 95% Wilson score bounds for one binomial proportion.
  *
  * @param int $successes Success count.
  * @param int $total     Denominator.
  * @return array|null Lower and upper bounds, or null without a denominator.
  */
-function extrachill_analytics_experiment_wilson_interval( $successes, $total ) {
-	if ( $total <= 0 ) {
+function extrachill_analytics_experiment_wilson_bounds( $successes, $total ) {
+	if ( $total <= 0 || $successes < 0 || $successes > $total ) {
 		return null;
 	}
 	$z      = 1.959963984540054;
@@ -196,8 +196,27 @@ function extrachill_analytics_experiment_wilson_interval( $successes, $total ) {
 	$margin = $z * sqrt( ( $p * ( 1 - $p ) + $z2 / ( 4 * $total ) ) / $total ) / ( 1 + $z2 / $total );
 
 	return array(
-		'lower' => round( max( 0, $center - $margin ), 4 ),
-		'upper' => round( min( 1, $center + $margin ), 4 ),
+		'lower' => max( 0, $center - $margin ),
+		'upper' => min( 1, $center + $margin ),
+	);
+}
+
+/**
+ * Return a rounded 95% Wilson score interval for one binomial proportion.
+ *
+ * @param int $successes Success count.
+ * @param int $total     Denominator.
+ * @return array|null Lower and upper bounds, or null without a denominator.
+ */
+function extrachill_analytics_experiment_wilson_interval( $successes, $total ) {
+	$bounds = extrachill_analytics_experiment_wilson_bounds( $successes, $total );
+	if ( null === $bounds ) {
+		return null;
+	}
+
+	return array(
+		'lower' => round( $bounds['lower'], 4 ),
+		'upper' => round( $bounds['upper'], 4 ),
 	);
 }
 
@@ -221,6 +240,15 @@ function extrachill_analytics_experiment_lift( $successes, $total, $control_succ
 			'status'         => 'zero_denominator',
 		);
 	}
+	if ( $successes < 0 || $successes > $total || $control_successes < 0 || $control_successes > $control_total ) {
+		return array(
+			'absolute'       => null,
+			'relative'       => null,
+			'absolute_ci_95' => null,
+			'relative_ci_95' => null,
+			'status'         => 'insufficient_data',
+		);
+	}
 	if ( $is_control ) {
 		return array(
 			'absolute'       => 0.0,
@@ -233,28 +261,28 @@ function extrachill_analytics_experiment_lift( $successes, $total, $control_succ
 
 	$rate         = $successes / $total;
 	$control_rate = $control_successes / $control_total;
-	$variant_ci   = extrachill_analytics_experiment_wilson_interval( $successes, $total );
-	$control_ci   = extrachill_analytics_experiment_wilson_interval( $control_successes, $control_total );
+	$variant_ci   = extrachill_analytics_experiment_wilson_bounds( $successes, $total );
+	$control_ci   = extrachill_analytics_experiment_wilson_bounds( $control_successes, $control_total );
+	$difference   = $rate - $control_rate;
 	$absolute_ci  = array(
-		'lower' => round( max( -1, $variant_ci['lower'] - $control_ci['upper'] ), 4 ),
-		'upper' => round( min( 1, $variant_ci['upper'] - $control_ci['lower'] ), 4 ),
+		'lower' => round( max( -1, $difference - sqrt( ( $rate - $variant_ci['lower'] ) ** 2 + ( $control_ci['upper'] - $control_rate ) ** 2 ) ), 4 ),
+		'upper' => round( min( 1, $difference + sqrt( ( $variant_ci['upper'] - $rate ) ** 2 + ( $control_rate - $control_ci['lower'] ) ** 2 ) ), 4 ),
 	);
 	$relative     = $control_rate > 0 ? ( $rate - $control_rate ) / $control_rate : null;
 	$relative_ci  = null;
-	$status       = $control_rate > 0 ? 'measured' : 'control_zero_rate';
-	if ( $successes > 0 && $control_successes > 0 ) {
+	$status       = 'insufficient_data';
+	if ( $successes > 0 && $successes < $total && $control_successes > 0 && $control_successes < $control_total ) {
 		$log_rr      = log( $rate / $control_rate );
 		$standard    = sqrt( ( 1 / $successes ) - ( 1 / $total ) + ( 1 / $control_successes ) - ( 1 / $control_total ) );
 		$relative_ci = array(
 			'lower' => round( exp( $log_rr - 1.959963984540054 * $standard ) - 1, 4 ),
 			'upper' => round( exp( $log_rr + 1.959963984540054 * $standard ) - 1, 4 ),
 		);
-	} elseif ( 'measured' === $status ) {
-		$status = 'insufficient_samples';
+		$status      = 'measured';
 	}
 
 	return array(
-		'absolute'       => round( $rate - $control_rate, 4 ),
+		'absolute'       => round( $difference, 4 ),
 		'relative'       => null === $relative ? null : round( $relative, 4 ),
 		'absolute_ci_95' => $absolute_ci,
 		'relative_ci_95' => $relative_ci,
@@ -544,7 +572,7 @@ function extrachill_analytics_build_experiment_summary( $rows, $options ) {
 				'people'          => $assignment_ready && $has_cohort && in_array( EC_ANALYTICS_EVENT_EXPERIMENT_EXPOSURE, $instrumented, true ) ? $exposed : null,
 				'stored_events'   => $assignment_ready && $has_cohort && in_array( EC_ANALYTICS_EVENT_EXPERIMENT_EXPOSURE, $instrumented, true ) ? (int) $bucket['exposure_events'] : null,
 				'rate'            => $assigned > 0 && in_array( EC_ANALYTICS_EVENT_EXPERIMENT_EXPOSURE, $instrumented, true ) ? round( $exposed / $assigned, 4 ) : null,
-				'rate_status'     => $assigned > 0 && in_array( EC_ANALYTICS_EVENT_EXPERIMENT_EXPOSURE, $instrumented, true ) ? 'measured' : 'zero_denominator',
+				'rate_status'     => ! in_array( EC_ANALYTICS_EVENT_EXPERIMENT_EXPOSURE, $instrumented, true ) ? 'not_instrumented' : ( $assigned > 0 ? 'measured' : 'zero_denominator' ),
 				'rate_ci_95'      => in_array( EC_ANALYTICS_EVENT_EXPERIMENT_EXPOSURE, $instrumented, true ) ? extrachill_analytics_experiment_wilson_interval( $exposed, $assigned ) : null,
 				'coverage_status' => ! in_array( EC_ANALYTICS_EVENT_EXPERIMENT_EXPOSURE, $instrumented, true ) ? 'not_instrumented' : ( $has_cohort ? ( $coverage['truncated'] ? 'truncated' : 'measured' ) : 'no_data' ),
 				'analysis_lens'   => 'descriptive',
@@ -582,7 +610,7 @@ function extrachill_analytics_build_experiment_summary( $rows, $options ) {
 			'exposure'   => 'Exposure requires a matching variant/version event strictly after assignment and is never inferred. Exposure-conditioned outcomes are descriptive and may be selection-biased.',
 			'outcomes'   => 'Each requested canonical outcome counts once per person and lens, strictly after its anchor and within the attribution window. Pre-assignment outcomes never attribute.',
 			'identity'   => 'Bot rows are excluded before identity observation. Payload user_id, stored user_id, then visitor_id are used; visitors stitch only when exactly one user is observed.',
-			'statistics' => 'Rates use assignment or observed-exposure people as denominators. Rate intervals are 95% Wilson score intervals; absolute lift uses the conservative difference of Wilson bounds; relative lift uses a log risk-ratio interval when both arms have successes. Nulls carry explicit status. No winner is selected.',
+			'statistics' => 'Rates use assignment or observed-exposure people as denominators. Rate intervals are 95% Wilson score intervals; absolute lift uses the Newcombe-Wilson hybrid-score difference interval; relative lift uses a Katz log risk-ratio interval only when both arms have nonzero successes and failures. Nulls carry explicit status. No winner is selected.',
 		),
 		'window'              => array(
 			'since'                   => (string) $options['since'],

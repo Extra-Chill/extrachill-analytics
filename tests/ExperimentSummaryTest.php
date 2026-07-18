@@ -57,7 +57,8 @@ final class ExperimentSummaryTest extends TestCase {
 		$this->assertSame( 0.6667, $treatment['outcomes']['newsletter_signup']['after_assignment']['lift_vs_control']['absolute'] );
 		$this->assertSame( 2.0, $treatment['outcomes']['newsletter_signup']['after_assignment']['lift_vs_control']['relative'] );
 		$this->assertNotNull( $treatment['outcomes']['newsletter_signup']['after_assignment']['rate_ci_95'] );
-		$this->assertNotNull( $treatment['outcomes']['newsletter_signup']['after_assignment']['lift_vs_control']['relative_ci_95'] );
+		$this->assertNull( $treatment['outcomes']['newsletter_signup']['after_assignment']['lift_vs_control']['relative_ci_95'] );
+		$this->assertSame( 'insufficient_data', $treatment['outcomes']['newsletter_signup']['after_assignment']['lift_vs_control']['status'] );
 		$this->assertSame( 1, $report['coverage']['duplicate_assignment_events'] );
 		$this->assertSame( 1, $report['coverage']['pre_assignment_outcome_events'] );
 		$this->assertSame( 1, $report['coverage']['bot_rows_excluded'] );
@@ -102,7 +103,7 @@ final class ExperimentSummaryTest extends TestCase {
 		$this->assertSame( 'truncated', $report['variants'][0]['assignment']['coverage_status'] );
 	}
 
-	/** Wilson intervals and lift math stay deterministic and never select a winner. */
+	/** Wilson intervals and normal lift math stay deterministic and never select a winner. */
 	public function test_confidence_and_lift_math(): void {
 		$this->assertSame(
 			array(
@@ -111,12 +112,164 @@ final class ExperimentSummaryTest extends TestCase {
 			),
 			extrachill_analytics_experiment_wilson_interval( 5, 10 )
 		);
-		$lift = extrachill_analytics_experiment_lift( 8, 10, 5, 10 );
+		$lift = extrachill_analytics_experiment_lift( 80, 100, 50, 100 );
 
 		$this->assertSame( 0.3, $lift['absolute'] );
 		$this->assertSame( 0.6, $lift['relative'] );
+		$this->assertSame(
+			array(
+				'lower' => 0.1691,
+				'upper' => 0.417,
+			),
+			$lift['absolute_ci_95']
+		);
+		$this->assertSame(
+			array(
+				'lower' => 0.2851,
+				'upper' => 0.992,
+			),
+			$lift['relative_ci_95']
+		);
 		$this->assertSame( 'measured', $lift['status'] );
 		$this->assertArrayNotHasKey( 'winner', $lift );
+	}
+
+	/**
+	 * Newcombe absolute intervals remain valid while Katz fails closed at boundaries.
+	 *
+	 * @dataProvider lift_boundary_provider
+	 *
+	 * @param int   $successes         Variant successes.
+	 * @param int   $total             Variant denominator.
+	 * @param int   $control_successes Control successes.
+	 * @param int   $control_total     Control denominator.
+	 * @param array $expected          Exact expected lift output.
+	 */
+	public function test_lift_boundary_intervals( $successes, $total, $control_successes, $control_total, $expected ): void {
+		$this->assertSame(
+			$expected,
+			extrachill_analytics_experiment_lift( $successes, $total, $control_successes, $control_total )
+		);
+	}
+
+	/** Return saturated, zero-boundary, and small-sample lift fixtures. */
+	public function lift_boundary_provider(): array {
+		return array(
+			'saturated 1/1 versus 1/1' => array(
+				1,
+				1,
+				1,
+				1,
+				array(
+					'absolute'       => 0.0,
+					'relative'       => 0.0,
+					'absolute_ci_95' => array(
+						'lower' => -0.7935,
+						'upper' => 0.7935,
+					),
+					'relative_ci_95' => null,
+					'status'         => 'insufficient_data',
+				),
+			),
+			'zero variant successes'   => array(
+				0,
+				10,
+				2,
+				10,
+				array(
+					'absolute'       => -0.2,
+					'relative'       => -1.0,
+					'absolute_ci_95' => array(
+						'lower' => -0.5098,
+						'upper' => 0.1124,
+					),
+					'relative_ci_95' => null,
+					'status'         => 'insufficient_data',
+				),
+			),
+			'zero control successes'   => array(
+				2,
+				10,
+				0,
+				10,
+				array(
+					'absolute'       => 0.2,
+					'relative'       => null,
+					'absolute_ci_95' => array(
+						'lower' => -0.1124,
+						'upper' => 0.5098,
+					),
+					'relative_ci_95' => null,
+					'status'         => 'insufficient_data',
+				),
+			),
+			'zero variant failures'    => array(
+				10,
+				10,
+				8,
+				10,
+				array(
+					'absolute'       => 0.2,
+					'relative'       => 0.25,
+					'absolute_ci_95' => array(
+						'lower' => -0.1124,
+						'upper' => 0.5098,
+					),
+					'relative_ci_95' => null,
+					'status'         => 'insufficient_data',
+				),
+			),
+			'zero control failures'    => array(
+				8,
+				10,
+				10,
+				10,
+				array(
+					'absolute'       => -0.2,
+					'relative'       => -0.2,
+					'absolute_ci_95' => array(
+						'lower' => -0.5098,
+						'upper' => 0.1124,
+					),
+					'relative_ci_95' => null,
+					'status'         => 'insufficient_data',
+				),
+			),
+			'small interior sample'    => array(
+				2,
+				5,
+				1,
+				5,
+				array(
+					'absolute'       => 0.2,
+					'relative'       => 1.0,
+					'absolute_ci_95' => array(
+						'lower' => -0.3098,
+						'upper' => 0.604,
+					),
+					'relative_ci_95' => array(
+						'lower' => -0.744,
+						'upper' => 14.6235,
+					),
+					'status'         => 'measured',
+				),
+			),
+		);
+	}
+
+	/** Missing exposure instrumentation is distinct from a measured zero denominator. */
+	public function test_absent_exposure_instrumentation_status(): void {
+		$options                       = $this->options( 1 );
+		$options['instrumented_types'] = array( 'experiment_assignment', 'newsletter_signup' );
+		$report                        = extrachill_analytics_build_experiment_summary(
+			array( $this->row( 1, 'experiment_assignment', 100, 'visitor-control', 0, $this->experiment( 'copy-test', 1, 'control', 'hero' ) ) ),
+			$options
+		);
+
+		$this->assertNull( $report['variants'][0]['exposure']['rate'] );
+		$this->assertNull( $report['variants'][0]['exposure']['rate_ci_95'] );
+		$this->assertSame( 'not_instrumented', $report['variants'][0]['exposure']['rate_status'] );
+		$this->assertSame( 'not_instrumented', $report['variants'][0]['exposure']['coverage_status'] );
 	}
 
 	/** Ability input is private, exact, bounded, and canonical-outcome-only. */
