@@ -10,9 +10,10 @@ is a private, read-only ability and is not a general experimentation API.
 - `experiment_exposure` records actual server-validated 50% viewport exposure.
 - `bridge_click` remains an independently lossy stored event. Its contract does
   not identify the rendered card or taxonomy, so it is reported only as broad
-  `any_bridge_click_after_assignment` and `any_bridge_click_after_exposure`
-  intent-to-treat network engagement. Click events are neither deduplicated nor
-  clamped, while unique clickers are reported separately.
+  `any_bridge_click_after_assignment` as intent-to-treat network engagement.
+  `any_bridge_click_after_exposure` is descriptive and exposure-conditioned,
+  not intent-to-treat. Click events are neither deduplicated nor clamped, while
+  unique clickers are reported separately.
 - `pageview` supplies the first identified cross-blog route transition after each
   assignment and exposure anchor.
 - `newsletter_signup`, `user_registration`, `onboarding_completed`, and

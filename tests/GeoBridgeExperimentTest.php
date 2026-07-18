@@ -59,11 +59,13 @@ final class GeoBridgeExperimentTest extends TestCase {
 		$this->assertSame( 0.0, $control['exposure']['rate'] );
 		$this->assertSame( 2, $control['network_engagement']['any_bridge_click_after_assignment']['events'] );
 		$this->assertSame( 1, $control['network_engagement']['any_bridge_click_after_assignment']['people'] );
+		$this->assertSame( 'intent_to_treat', $control['network_engagement']['any_bridge_click_after_assignment']['analysis_lens'] );
 		$this->assertSame( 2, $treatment['assignment']['people'] );
 		$this->assertSame( 2, $treatment['exposure']['people'] );
 		$this->assertSame( 1.0, $treatment['exposure']['rate'] );
 		$this->assertSame( 2, $treatment['network_engagement']['any_bridge_click_after_exposure']['events'] );
 		$this->assertSame( 1.0, $treatment['network_engagement']['any_bridge_click_after_exposure']['events_per_exposure'] );
+		$this->assertSame( 'descriptive_exposure_conditioned', $treatment['network_engagement']['any_bridge_click_after_exposure']['analysis_lens'] );
 		$this->assertFalse( $treatment['network_engagement']['card_specific_click_instrumented'] );
 		$this->assertSame( 'homepage', $control['route_transitions']['after_assignment'][0]['route_family'] );
 		$this->assertSame( 'same_session', $control['route_transitions']['after_assignment'][0]['session_stage'] );
@@ -78,6 +80,21 @@ final class GeoBridgeExperimentTest extends TestCase {
 		$this->assertSame( 1, $report['coverage']['bot_rows_excluded'] );
 		$this->assertSame( 1, $report['coverage']['ambiguous_visitor_ids'] );
 		$this->assertGreaterThanOrEqual( 1, $report['coverage']['pre_assignment_outcome_events'] );
+	}
+
+	/**
+	 * Instrumented rates remain undefined when their denominator is absent.
+	 */
+	public function test_zero_denominators_return_null_rates(): void {
+		$report    = extrachill_analytics_build_geo_bridge_experiment_report(
+			array( $this->row( 1, 'experiment_assignment', 100, 'visitor-control', 0, 1, $this->experiment( 'control' ) ) ),
+			$this->options()
+		);
+		$treatment = $report['variants'][1];
+
+		$this->assertNull( $treatment['exposure']['rate'] );
+		$this->assertNull( $treatment['network_engagement']['any_bridge_click_after_assignment']['events_per_assignment'] );
+		$this->assertNull( $treatment['network_engagement']['any_bridge_click_after_exposure']['events_per_exposure'] );
 	}
 
 	/**

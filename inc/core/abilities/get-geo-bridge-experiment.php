@@ -385,23 +385,25 @@ function extrachill_analytics_geo_bridge_variant_row( $variant, $bucket, $covera
 		'exposure'           => array(
 			'people'          => $exposure_ready ? $exposed : null,
 			'stored_events'   => $exposure_ready ? (int) $bucket['exposure_events'] : null,
-			'rate'            => $exposure_ready && $assigned > 0 ? round( $exposed / $assigned, 4 ) : ( $exposure_ready ? 0.0 : null ),
+			'rate'            => $exposure_ready && $assigned > 0 ? round( $exposed / $assigned, 4 ) : null,
 			'coverage_status' => $exposure_ready ? ( $coverage['truncated'] ? 'truncated' : 'measured' ) : 'not_instrumented',
 		),
 		'network_engagement' => array(
 			'any_bridge_click_after_assignment' => array(
 				'events'                => $click_ready ? (int) $bucket['bridge_click_events_assignment'] : null,
 				'people'                => $click_ready ? count( $bucket['bridge_clickers_assignment'] ) : null,
-				'events_per_assignment' => $click_ready && $assigned > 0 ? round( $bucket['bridge_click_events_assignment'] / $assigned, 4 ) : ( $click_ready ? 0.0 : null ),
+				'events_per_assignment' => $click_ready && $assigned > 0 ? round( $bucket['bridge_click_events_assignment'] / $assigned, 4 ) : null,
+				'analysis_lens'         => 'intent_to_treat',
 			),
 			'any_bridge_click_after_exposure'   => array(
 				'events'              => $click_ready && $exposure_ready ? (int) $bucket['bridge_click_events_exposure'] : null,
 				'people'              => $click_ready && $exposure_ready ? count( $bucket['bridge_clickers_exposure'] ) : null,
-				'events_per_exposure' => $click_ready && $exposure_ready && $exposed > 0 ? round( $bucket['bridge_click_events_exposure'] / $exposed, 4 ) : ( $click_ready && $exposure_ready ? 0.0 : null ),
+				'events_per_exposure' => $click_ready && $exposure_ready && $exposed > 0 ? round( $bucket['bridge_click_events_exposure'] / $exposed, 4 ) : null,
+				'analysis_lens'       => 'descriptive_exposure_conditioned',
 			),
 			'card_specific_click_instrumented'  => false,
 			'coverage_status'                   => $click_ready ? ( $coverage['truncated'] ? 'truncated' : 'measured' ) : 'not_instrumented',
-			'caveat'                            => 'The bridge_click contract identifies no rendered card or taxonomy. These are intent-to-treat counts of any bridge card clicked after the anchor, including unrelated artist or festival cards; they are not geographic-card click attribution.',
+			'caveat'                            => 'The assignment lens is intent-to-treat. The exposure lens is descriptive and exposure-conditioned, so it may be selection-biased. The bridge_click contract identifies no rendered card or taxonomy; both include unrelated artist or festival cards and are not geographic-card click attribution.',
 		),
 		'route_transitions'  => array(
 			'after_assignment' => $route_ready ? extrachill_analytics_geo_bridge_transition_rows( $bucket['transitions_assignment'] ) : null,
@@ -656,7 +658,7 @@ function extrachill_analytics_build_geo_bridge_experiment_report( $rows, $option
 		'contract'       => array(
 			'assignment'        => 'One person enters the denominator at their first valid experiment_assignment ordered by created_at then ID. Duplicate rows do not add people; a conflicting later variant is disclosed and does not reassign the person.',
 			'exposure'          => 'One person is exposed only after a matching-variant experiment_exposure strictly after assignment. Exposure is never inferred from assignment, bridge clicks, impressions, or pageviews.',
-			'any_bridge_clicks' => 'Stored non-bot bridge_click rows are broad intent-to-treat network-engagement outcomes after assignment and exposure. The contract cannot identify the geographic treatment card, so unrelated artist/festival card clicks remain included and are never labeled card-specific attribution. Event counts are not deduplicated, synthesized, or clamped; people counts are separate.',
+			'any_bridge_clicks' => 'Stored non-bot bridge_click rows are broad network-engagement outcomes. The assignment lens is intent-to-treat; the exposure lens is descriptive and exposure-conditioned. The contract cannot identify the geographic treatment card, so unrelated artist/festival card clicks remain included and are never labeled card-specific attribution. Event counts are not deduplicated, synthesized, or clamped; people counts are separate.',
 			'route_transition'  => 'The first identified cross-blog pageview strictly after each anchor is a transition. Its destination is blog_id plus route_family; same/later session follows the configured pageview inactivity gap.',
 			'outcomes'          => 'Only newsletter_signup, user_registration, onboarding_completed, and artist_profile_first_publish are eligible. Automatic registration newsletter rows are excluded. Each person/outcome counts once per anchor; pre-assignment rows never attribute.',
 			'identity'          => 'Bot-stamped rows are excluded before identity observation. For remaining rows identity is payload user_id, then stored user_id, then visitor_id. A visitor stitches to a user only when the bounded window observes exactly one user for that visitor; ambiguous visitors remain unmerged.',
