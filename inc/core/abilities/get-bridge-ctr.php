@@ -186,6 +186,8 @@ function extrachill_analytics_ability_get_bridge_ctr( $input ) {
 			'clicks'                        => (int) $dest_counts['clicks'],
 			'impressions'                   => (int) $dest_counts['impressions'],
 			'ctr'                           => extrachill_analytics_bridge_stored_ratio( $dest_counts ),
+			'stored_click_events'           => (int) $dest_counts['clicks'],
+			'stored_impression_events'      => (int) $dest_counts['impressions'],
 			'stored_click_impression_ratio' => extrachill_analytics_bridge_stored_ratio( $dest_counts ),
 			'measurement_grain_notice'      => 'Aggregate stored event ratio only; no page-load or DOM-element identifier exists for exact opportunity or per-card CTR.',
 		);
