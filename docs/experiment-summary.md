@@ -44,9 +44,11 @@ exposure, and outcome maps derive from the bounded retained rows.
 
 ## Attribution And Output
 
-Bot rows are removed before identity mapping. Payload `user_id`, stored
-`user_id`, and then `visitor_id` resolve a person. A visitor stitches to a user
-only when exactly one user is observed in the bounded window; ambiguous visitors
+Bot rows are removed first. Experiment rows then pass key, version, policy,
+variant, and surface contract admission before identity mapping, so rejected
+rows cannot create visitor/user edges. Payload `user_id`, stored `user_id`, and
+then `visitor_id` resolve a person. A visitor stitches to a user only when
+exactly one admitted user is observed in the bounded window; ambiguous visitors
 remain unmerged.
 
 The first valid assignment fixes a person's variant and definition version.

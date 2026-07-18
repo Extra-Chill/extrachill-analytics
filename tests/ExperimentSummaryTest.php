@@ -103,6 +103,35 @@ final class ExperimentSummaryTest extends TestCase {
 		$this->assertSame( 0, $report['coverage']['identified_exposure_people'] );
 	}
 
+	/** Invalid experiment rows cannot contaminate otherwise valid identity bridges. */
+	public function test_oversized_assignment_cannot_create_cross_variant_identity_edge(): void {
+		$options   = $this->options( null );
+		$rows      = array(
+			$this->row( 1, 'experiment_assignment', 100, 'visitor-control', 0, $this->experiment( 'copy-test', 1, 'control', 'hero' ) ),
+			$this->row( 2, 'newsletter_signup', 110, 'visitor-control', 10, array( 'user_id' => 10 ) ),
+			$this->row( 3, 'experiment_assignment', 120, 'visitor-treatment', 20, $this->experiment( 'copy-test', 1, 'treatment', 'hero' ) ),
+			$this->row( 4, 'newsletter_signup', 130, 'visitor-treatment', 20, array( 'user_id' => 20 ) ),
+			$this->row( 5, 'experiment_assignment', 140, 'visitor-control', 20, $this->experiment( 'copy-test', 1000001, 'treatment', 'hero' ) ),
+		);
+		$report    = extrachill_analytics_build_experiment_summary( $rows, $options );
+		$control   = $report['variants'][0];
+		$treatment = $report['variants'][1];
+
+		$this->assertSame( 1, $control['assignment']['people'] );
+		$this->assertSame( 1, $treatment['assignment']['people'] );
+		$this->assertSame( 1, $control['outcomes']['newsletter_signup']['after_assignment']['people'] );
+		$this->assertSame( 1, $treatment['outcomes']['newsletter_signup']['after_assignment']['people'] );
+		$this->assertSame( 0.0, $treatment['outcomes']['newsletter_signup']['after_assignment']['lift_vs_control']['absolute'] );
+		$this->assertSame( 0.0, $treatment['outcomes']['newsletter_signup']['after_assignment']['lift_vs_control']['relative'] );
+		$this->assertSame( 0, $report['coverage']['ambiguous_visitor_ids'] );
+		$this->assertSame( 2, $report['coverage']['unambiguous_identity_bridges'] );
+		$this->assertSame( 1, $report['coverage']['invalid_contract_rows'] );
+		$this->assertSame( 0, $report['coverage']['duplicate_assignment_events'] );
+		$this->assertSame( 0, $report['coverage']['conflicting_assignment_events'] );
+		$this->assertSame( array( 1 => 2 ), $report['version_diagnostics']['observed_event_rows_by_version'] );
+		$this->assertFalse( $report['version_diagnostics']['mixed_versions_observed'] );
+	}
+
 	/** Zero denominators and absent instrumentation return null with explicit status. */
 	public function test_zero_denominator_and_no_instrumentation_states(): void {
 		$report    = extrachill_analytics_build_experiment_summary(

@@ -334,6 +334,31 @@ function extrachill_analytics_experiment_summary_contract_matches( $event, $opti
 }
 
 /**
+ * Classify one stored experiment row before identity observation.
+ *
+ * @param array $event   Normalized event.
+ * @param array $options Report options.
+ * @return string Contract status.
+ */
+function extrachill_analytics_experiment_summary_contract_status( $event, $options ) {
+	if ( ! in_array( $event['event_type'], array( EC_ANALYTICS_EVENT_EXPERIMENT_ASSIGNMENT, EC_ANALYTICS_EVENT_EXPERIMENT_EXPOSURE ), true ) ) {
+		return 'not_experiment';
+	}
+	$data = $event['event_data'];
+	if ( (string) ( $data['experiment_key'] ?? '' ) !== $options['experiment_key'] ) {
+		return 'other_experiment';
+	}
+	$version = $data['definition_version'] ?? null;
+	if ( ! is_int( $version ) || $version <= 0 || $version > 1000000 ) {
+		return 'invalid_contract';
+	}
+	if ( null !== $options['definition_version'] && $version !== $options['definition_version'] ) {
+		return 'other_definition_version';
+	}
+	return extrachill_analytics_experiment_summary_contract_matches( $event, $options ) ? 'matched' : 'invalid_contract';
+}
+
+/**
  * Aggregate stored rows into a bounded generic experiment summary.
  *
  * @param array $rows    Stored rows.
@@ -348,7 +373,17 @@ function extrachill_analytics_build_experiment_summary( $rows, $options ) {
 			return $a['ts'] === $b['ts'] ? $a['id'] <=> $b['id'] : $a['ts'] <=> $b['ts'];
 		}
 	);
-	$identity        = extrachill_analytics_experiment_identity_map( $events );
+	$identity_events = array();
+	foreach ( $events as $event ) {
+		if ( ! empty( $event['event_data']['is_bot'] ) ) {
+			continue;
+		}
+		$status = extrachill_analytics_experiment_summary_contract_status( $event, $options );
+		if ( in_array( $status, array( 'not_experiment', 'matched' ), true ) ) {
+			$identity_events[] = $event;
+		}
+	}
+	$identity        = extrachill_analytics_experiment_identity_map( $identity_events );
 	$visitor_to_user = $identity['map'];
 	$buckets         = array();
 	foreach ( $options['variants'] as $variant ) {
@@ -392,30 +427,27 @@ function extrachill_analytics_build_experiment_summary( $rows, $options ) {
 			++$coverage['bot_rows_excluded'];
 			continue;
 		}
-		$person = extrachill_analytics_experiment_person_key( $event, $visitor_to_user );
-		if ( '' === $person ) {
-			$coverage['unidentified_rows'][ $type ] = (int) ( $coverage['unidentified_rows'][ $type ] ?? 0 ) + 1;
-			continue;
-		}
 
 		if ( in_array( $type, array( EC_ANALYTICS_EVENT_EXPERIMENT_ASSIGNMENT, EC_ANALYTICS_EVENT_EXPERIMENT_EXPOSURE ), true ) ) {
-			$data = $event['event_data'];
-			if ( (string) ( $data['experiment_key'] ?? '' ) !== $options['experiment_key'] ) {
+			$status = extrachill_analytics_experiment_summary_contract_status( $event, $options );
+			if ( 'other_experiment' === $status ) {
 				++$coverage['other_experiment_rows'];
 				continue;
 			}
-			$stored_version = $data['definition_version'] ?? null;
-			if ( ! is_int( $stored_version ) || $stored_version <= 0 || $stored_version > 1000000 ) {
+			if ( 'invalid_contract' === $status ) {
 				++$coverage['invalid_contract_rows'];
 				continue;
 			}
+			$data                        = $event['event_data'];
+			$stored_version              = $data['definition_version'] ?? null;
 			$versions[ $stored_version ] = (int) ( $versions[ $stored_version ] ?? 0 ) + 1;
-			if ( null !== $options['definition_version'] && $stored_version !== $options['definition_version'] ) {
+			if ( 'other_definition_version' === $status ) {
 				++$coverage['other_definition_version_rows'];
 				continue;
 			}
-			if ( ! extrachill_analytics_experiment_summary_contract_matches( $event, $options ) ) {
-				++$coverage['invalid_contract_rows'];
+			$person = extrachill_analytics_experiment_person_key( $event, $visitor_to_user );
+			if ( '' === $person ) {
+				$coverage['unidentified_rows'][ $type ] = (int) ( $coverage['unidentified_rows'][ $type ] ?? 0 ) + 1;
 				continue;
 			}
 			$variant                               = (string) $data['variant'];
@@ -472,6 +504,11 @@ function extrachill_analytics_build_experiment_summary( $rows, $options ) {
 				'session_stage'   => 'same_session',
 			);
 			++$buckets[ $variant ]['exposed_people'];
+			continue;
+		}
+		$person = extrachill_analytics_experiment_person_key( $event, $visitor_to_user );
+		if ( '' === $person ) {
+			$coverage['unidentified_rows'][ $type ] = (int) ( $coverage['unidentified_rows'][ $type ] ?? 0 ) + 1;
 			continue;
 		}
 
