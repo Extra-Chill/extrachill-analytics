@@ -57,13 +57,14 @@ final class GeoBridgeExperimentTest extends TestCase {
 		$this->assertSame( 4, $control['assignment']['stored_events'] );
 		$this->assertSame( 0, $control['exposure']['people'] );
 		$this->assertSame( 0.0, $control['exposure']['rate'] );
-		$this->assertSame( 2, $control['bridge_clicks']['after_assignment_events'] );
-		$this->assertSame( 1, $control['bridge_clicks']['after_assignment_people'] );
+		$this->assertSame( 2, $control['network_engagement']['any_bridge_click_after_assignment']['events'] );
+		$this->assertSame( 1, $control['network_engagement']['any_bridge_click_after_assignment']['people'] );
 		$this->assertSame( 2, $treatment['assignment']['people'] );
 		$this->assertSame( 2, $treatment['exposure']['people'] );
 		$this->assertSame( 1.0, $treatment['exposure']['rate'] );
-		$this->assertSame( 2, $treatment['bridge_clicks']['after_exposure_events'] );
-		$this->assertSame( 1.0, $treatment['bridge_clicks']['events_per_exposure'] );
+		$this->assertSame( 2, $treatment['network_engagement']['any_bridge_click_after_exposure']['events'] );
+		$this->assertSame( 1.0, $treatment['network_engagement']['any_bridge_click_after_exposure']['events_per_exposure'] );
+		$this->assertFalse( $treatment['network_engagement']['card_specific_click_instrumented'] );
 		$this->assertSame( 'homepage', $control['route_transitions']['after_assignment'][0]['route_family'] );
 		$this->assertSame( 'same_session', $control['route_transitions']['after_assignment'][0]['session_stage'] );
 		$this->assertSame( 1, $this->transition_people( $treatment, 'after_assignment', 'archive', 'same_session' ) );
@@ -95,7 +96,66 @@ final class GeoBridgeExperimentTest extends TestCase {
 		$this->assertSame( 1, $report['coverage']['unattributed_exposure_events'] );
 		$this->assertSame( 0, $report['variants'][0]['exposure']['people'] );
 		$this->assertSame( 1, $report['variants'][0]['outcomes']['newsletter_signup']['after_assignment']['same_session'] );
-		$this->assertSame( 2.0, $report['variants'][0]['bridge_clicks']['events_per_assignment'] );
+		$this->assertSame( 2.0, $report['variants'][0]['network_engagement']['any_bridge_click_after_assignment']['events_per_assignment'] );
+	}
+
+	/**
+	 * Bot-stamped identity links cannot create visitor/user ambiguity.
+	 */
+	public function test_bot_identity_rows_are_excluded_before_stitching(): void {
+		$rows   = array(
+			$this->row( 1, 'experiment_assignment', 100, 'visitor-bot-link', 0, 1, $this->experiment( 'control' ) ),
+			$this->row(
+				2,
+				'user_registration',
+				110,
+				'visitor-bot-link',
+				91,
+				1,
+				array(
+					'user_id' => 91,
+					'is_bot'  => true,
+				)
+			),
+			$this->row( 3, 'user_registration', 120, 'visitor-bot-link', 92, 1, array( 'user_id' => 92 ) ),
+		);
+		$report = extrachill_analytics_build_geo_bridge_experiment_report( $rows, $this->options() );
+
+		$this->assertSame( 0, $report['coverage']['ambiguous_visitor_ids'] );
+		$this->assertSame( 1, $report['coverage']['unambiguous_identity_bridges'] );
+		$this->assertSame( 1, $report['coverage']['bot_rows_excluded'] );
+		$this->assertSame( 1, $report['variants'][0]['outcomes']['user_registration']['after_assignment']['same_session'] );
+	}
+
+	/**
+	 * Generic artist-card clicks remain broad intent-to-treat outcomes.
+	 */
+	public function test_unrelated_artist_click_is_never_labeled_geographic_card_attribution(): void {
+		$rows       = array(
+			$this->row( 1, 'experiment_assignment', 100, 'visitor-artist', 0, 1, $this->experiment( 'treatment' ) ),
+			$this->row( 2, 'experiment_exposure', 110, 'visitor-artist', 0, 1, $this->experiment( 'treatment' ) ),
+			$this->row(
+				3,
+				'bridge_click',
+				120,
+				'visitor-artist',
+				0,
+				1,
+				array(
+					'dest_site' => 'artist',
+					'term'      => 'Unrelated Artist',
+				)
+			),
+		);
+		$report     = extrachill_analytics_build_geo_bridge_experiment_report( $rows, $this->options() );
+		$treatment  = $report['variants'][1];
+		$engagement = $treatment['network_engagement'];
+
+		$this->assertSame( 1, $engagement['any_bridge_click_after_assignment']['events'] );
+		$this->assertSame( 1, $engagement['any_bridge_click_after_exposure']['events'] );
+		$this->assertFalse( $engagement['card_specific_click_instrumented'] );
+		$this->assertStringContainsString( 'unrelated artist or festival cards', $engagement['caveat'] );
+		$this->assertArrayNotHasKey( 'bridge_clicks', $treatment );
 	}
 
 	/**
