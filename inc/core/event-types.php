@@ -209,10 +209,14 @@ const EC_ANALYTICS_EVENT_USER_REREGISTRATION_ATTEMPT      = 'user_reregistration
  * Artist Dispatch editorial lifecycle events.
  *
  * Persisted access-event payloads are limited to a positive integer `user_id`,
- * a positive integer `request_id`, and an `eligibility_cohort` selected from a
- * fixed, emitter-owned enum. Persisted post-event payloads are limited to a
- * positive integer `post_id`, `submitter_user_id`, and canonical `artist_id`.
- * Omit identifiers that are unavailable rather than substituting free text.
+ * an optional `request_id` as a canonical lowercase UUID v4 string of exactly
+ * 36 ASCII characters matching
+ * `^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`,
+ * and an `eligibility_cohort` selected from a fixed, emitter-owned enum. Omit
+ * `request_id` when unavailable rather than substituting free text. Persisted
+ * post-event payloads are limited to a positive integer `post_id`,
+ * `submitter_user_id`, and canonical `artist_id`. Omit other unavailable
+ * identifiers rather than substituting free text.
  *
  * Never record names, emails, proposal or application text, article title or
  * content, internal decision notes, rights acknowledgements, or free-form
