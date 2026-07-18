@@ -1,6 +1,6 @@
 <?php
 /**
- * Behavioral tests for the bridge stored-event report (issues #191 and #201).
+ * Behavioral tests for the bridge stored-event report (issues #206 and #201).
  *
  * @package ExtraChill\Analytics
  */
@@ -73,6 +73,8 @@ final class GetBridgeCtrTest extends TestCase {
 		$this->assertSame( 1, $report['stored_click_events'] );
 		$this->assertSame( 0.5, $report['stored_click_impression_ratio'] );
 		$this->assertArrayNotHasKey( 'dedupe', $report );
+		$this->assertArrayNotHasKey( 'observed_exposures', $report );
+		$this->assertArrayNotHasKey( 'click_proven_missing_exposures', $report );
 	}
 
 	/**
@@ -166,9 +168,9 @@ final class GetBridgeCtrTest extends TestCase {
 		$report = extrachill_analytics_ability_get_bridge_ctr( array( 'days' => 0 ) );
 
 		$this->assertSame( 'events', $report['by_dest_site'][0]['dest_site'] );
-		$this->assertSame( 0.5, $report['by_dest_site'][0]['stored_event_ratio'] );
+		$this->assertSame( 0.5, $report['by_dest_site'][0]['stored_click_impression_ratio'] );
 		$this->assertSame( 'artist', $report['by_dest_site'][1]['dest_site'] );
-		$this->assertSame( 0.0, $report['by_dest_site'][1]['stored_event_ratio'] );
+		$this->assertSame( 0.0, $report['by_dest_site'][1]['stored_click_impression_ratio'] );
 	}
 
 	/**

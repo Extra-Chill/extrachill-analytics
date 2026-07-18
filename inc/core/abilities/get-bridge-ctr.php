@@ -182,12 +182,12 @@ function extrachill_analytics_ability_get_bridge_ctr( $input ) {
 	$by_dest_site = array();
 	foreach ( $by_dest as $dest => $dest_counts ) {
 		$by_dest_site[] = array(
-			'dest_site'                => '' === $dest ? '(unknown)' : $dest,
-			'clicks'                   => (int) $dest_counts['clicks'],
-			'impressions'              => (int) $dest_counts['impressions'],
-			'ctr'                      => extrachill_analytics_bridge_stored_ratio( $dest_counts ),
-			'stored_event_ratio'       => extrachill_analytics_bridge_stored_ratio( $dest_counts ),
-			'measurement_grain_notice' => 'Aggregate stored event ratio only; no page-load or DOM-element identifier exists for exact opportunity or per-card CTR.',
+			'dest_site'                     => '' === $dest ? '(unknown)' : $dest,
+			'clicks'                        => (int) $dest_counts['clicks'],
+			'impressions'                   => (int) $dest_counts['impressions'],
+			'ctr'                           => extrachill_analytics_bridge_stored_ratio( $dest_counts ),
+			'stored_click_impression_ratio' => extrachill_analytics_bridge_stored_ratio( $dest_counts ),
+			'measurement_grain_notice'      => 'Aggregate stored event ratio only; no page-load or DOM-element identifier exists for exact opportunity or per-card CTR.',
 		);
 	}
 
@@ -259,6 +259,6 @@ function extrachill_analytics_ability_get_bridge_ctr( $input ) {
 		'period'                        => $days > 0
 			? gmdate( 'Y-m-d', (int) strtotime( "-{$days} days" ) ) . ' to ' . gmdate( 'Y-m-d' )
 			: 'all time',
-		'note'                          => 'This is a ratio of independently stored, bot-filtered event rows, not an atomic opportunity conversion rate. Current bridge_impression events are attempted at 50% viewport exposure and first click attempts missing exposure before click, but each request is delivered independently and may be lost or duplicated. Ratios can exceed 100% under asymmetric loss or ambiguous retries. JavaScript execution filters non-JS crawlers and inert prefetches but does not prove human identity; truthy canonical is_bot stamps are excluded.',
+		'note'                          => 'This is a ratio of independently stored, bot-filtered event rows, not an atomic opportunity conversion rate. Current bridge_impression events are attempted at 50% viewport exposure, and a first click independently attempts an impression before its click event. Each request may be lost or duplicated, so ratios can exceed 100% under asymmetric loss or ambiguous retries. JavaScript execution filters non-JS crawlers and inert prefetches but does not prove human identity; truthy canonical is_bot stamps are excluded.',
 	);
 }
