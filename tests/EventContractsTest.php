@@ -117,8 +117,20 @@ final class EventContractsTest extends TestCase {
 	 * Network hooks persist distinct canonical events with exact bounded fields.
 	 */
 	public function test_network_hooks_persist_exact_assignment_and_exposure_payloads(): void {
-		extrachill_analytics_record_experiment_assignment( 'geo-bridge-holdout', 'control', 'single-post-bridge' );
-		extrachill_analytics_record_experiment_exposure( 'geo-bridge-holdout', 'treatment', 'single-post-bridge' );
+		extrachill_analytics_record_experiment_assignment(
+			array(
+				'experiment_key' => 'geo-bridge-holdout',
+				'variant'        => 'control',
+				'surface'        => 'single-post-bridge',
+			)
+		);
+		extrachill_analytics_record_experiment_exposure(
+			array(
+				'experiment_key' => 'geo-bridge-holdout',
+				'variant'        => 'treatment',
+				'surface'        => 'single-post-bridge',
+			)
+		);
 
 		$this->assertCount( 2, $GLOBALS['extrachill_analytics_test_events'] );
 		$this->assertSame( EC_ANALYTICS_EVENT_EXPERIMENT_ASSIGNMENT, $GLOBALS['extrachill_analytics_test_events'][0][0] );
@@ -135,15 +147,88 @@ final class EventContractsTest extends TestCase {
 	}
 
 	/**
+	 * Analytics stays aligned to Network's exact one-array action contract.
+	 */
+	public function test_network_hook_names_and_accepted_payload_shape_do_not_drift(): void {
+		$experiment_actions = array_values(
+			array_filter(
+				$GLOBALS['extrachill_analytics_test_registered_actions'],
+				static function ( $registration ) {
+					return isset( $registration[0] ) && 0 === strpos( $registration[0], 'extrachill_experiment_' );
+				}
+			)
+		);
+
+		$this->assertContains(
+			array( 'extrachill_experiment_assignment', 'extrachill_analytics_record_experiment_assignment', 10, 1 ),
+			$experiment_actions
+		);
+		$this->assertContains(
+			array( 'extrachill_experiment_exposure', 'extrachill_analytics_record_experiment_exposure', 10, 1 ),
+			$experiment_actions
+		);
+		$this->assertNotContains( 'extrachill_experiment_assignment_recorded', array_column( $experiment_actions, 0 ) );
+		$this->assertNotContains( 'extrachill_experiment_exposure_recorded', array_column( $experiment_actions, 0 ) );
+
+		$this->assertFalse(
+			extrachill_analytics_record_experiment_event(
+				EC_ANALYTICS_EVENT_EXPERIMENT_ASSIGNMENT,
+				array(
+					'experiment_key' => 'geo-bridge-holdout',
+					'variant'        => 'control',
+					'surface'        => 'single-post-bridge',
+					'extra'          => 'rejected',
+				)
+			)
+		);
+	}
+
+	/**
 	 * The persistence listener rejects drift and privacy exclusion.
 	 */
 	public function test_experiment_listener_rejects_unregistered_contract_values(): void {
-		$this->assertFalse( extrachill_analytics_record_experiment_event( EC_ANALYTICS_EVENT_EXPERIMENT_ASSIGNMENT, 'other', 'control', 'single-post-bridge' ) );
-		$this->assertFalse( extrachill_analytics_record_experiment_event( EC_ANALYTICS_EVENT_EXPERIMENT_ASSIGNMENT, 'geo-bridge-holdout', 'challenger', 'single-post-bridge' ) );
-		$this->assertFalse( extrachill_analytics_record_experiment_event( EC_ANALYTICS_EVENT_EXPERIMENT_EXPOSURE, 'geo-bridge-holdout', 'treatment', 'other' ) );
+		$this->assertFalse(
+			extrachill_analytics_record_experiment_event(
+				EC_ANALYTICS_EVENT_EXPERIMENT_ASSIGNMENT,
+				array(
+					'experiment_key' => 'other',
+					'variant'        => 'control',
+					'surface'        => 'single-post-bridge',
+				)
+			)
+		);
+		$this->assertFalse(
+			extrachill_analytics_record_experiment_event(
+				EC_ANALYTICS_EVENT_EXPERIMENT_ASSIGNMENT,
+				array(
+					'experiment_key' => 'geo-bridge-holdout',
+					'variant'        => 'challenger',
+					'surface'        => 'single-post-bridge',
+				)
+			)
+		);
+		$this->assertFalse(
+			extrachill_analytics_record_experiment_event(
+				EC_ANALYTICS_EVENT_EXPERIMENT_EXPOSURE,
+				array(
+					'experiment_key' => 'geo-bridge-holdout',
+					'variant'        => 'treatment',
+					'surface'        => 'other',
+				)
+			)
+		);
 
 		$_SERVER['HTTP_SEC_GPC'] = '1';
-		$this->assertFalse( extrachill_analytics_record_experiment_event( EC_ANALYTICS_EVENT_EXPERIMENT_EXPOSURE, 'geo-bridge-holdout', 'treatment', 'single-post-bridge' ) );
+		$this->assertFalse(
+			extrachill_analytics_record_experiment_event(
+				EC_ANALYTICS_EVENT_EXPERIMENT_EXPOSURE,
+				array(
+					'experiment_key' => 'geo-bridge-holdout',
+					'variant'        => 'treatment',
+					'surface'        => 'single-post-bridge',
+				)
+			)
+		);
 		$this->assertSame( array(), $GLOBALS['extrachill_analytics_test_events'] );
 	}
 }

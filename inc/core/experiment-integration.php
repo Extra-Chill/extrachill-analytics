@@ -60,15 +60,23 @@ add_filter( 'extrachill_experiment_measurement_eligible', 'extrachill_analytics_
  * signal against that assignment. This callback accepts no browser request and
  * persists only the three bounded scalar dimensions supplied by those hooks.
  *
- * @param string $event_type     Canonical assignment or exposure event name.
- * @param string $experiment_key Network-validated experiment key.
- * @param string $variant        Network-validated assigned variant.
- * @param string $surface        Network-validated experiment surface.
+ * @param string $event_type Canonical assignment or exposure event name.
+ * @param array  $metadata   Network-validated experiment metadata.
  * @return int|false Event ID, or false when the contract/privacy check fails.
  */
-function extrachill_analytics_record_experiment_event( $event_type, $experiment_key, $variant, $surface ) {
+function extrachill_analytics_record_experiment_event( $event_type, $metadata ) {
+	if ( ! is_array( $metadata ) || array( 'experiment_key', 'variant', 'surface' ) !== array_keys( $metadata ) ) {
+		return false;
+	}
+
+	$experiment_key = $metadata['experiment_key'];
+	$variant        = $metadata['variant'];
+	$surface        = $metadata['surface'];
 	if (
 		! in_array( $event_type, array( EC_ANALYTICS_EVENT_EXPERIMENT_ASSIGNMENT, EC_ANALYTICS_EVENT_EXPERIMENT_EXPOSURE ), true )
+		|| ! is_string( $experiment_key )
+		|| ! is_string( $variant )
+		|| ! is_string( $surface )
 		|| EC_ANALYTICS_EXPERIMENT_GEO_BRIDGE_HOLDOUT !== $experiment_key
 		|| EC_ANALYTICS_EXPERIMENT_SURFACE_SINGLE_POST_BRIDGE !== $surface
 		|| ! in_array( $variant, EC_ANALYTICS_EXPERIMENT_VARIANTS, true )
@@ -85,11 +93,7 @@ function extrachill_analytics_record_experiment_event( $event_type, $experiment_
 
 	return extrachill_track_analytics_event(
 		$event_type,
-		array(
-			'experiment_key' => $experiment_key,
-			'variant'        => $variant,
-			'surface'        => $surface,
-		),
+		$metadata,
 		'',
 		$visitor_id
 	);
@@ -98,23 +102,19 @@ function extrachill_analytics_record_experiment_event( $event_type, $experiment_
 /**
  * Persist a measured assignment resolved by Network.
  *
- * @param string $experiment_key Experiment key.
- * @param string $variant        Assigned variant.
- * @param string $surface        Experiment surface.
+ * @param array $metadata Bounded assignment metadata.
  */
-function extrachill_analytics_record_experiment_assignment( $experiment_key, $variant, $surface ) {
-	extrachill_analytics_record_experiment_event( EC_ANALYTICS_EVENT_EXPERIMENT_ASSIGNMENT, $experiment_key, $variant, $surface );
+function extrachill_analytics_record_experiment_assignment( $metadata ) {
+	extrachill_analytics_record_experiment_event( EC_ANALYTICS_EVENT_EXPERIMENT_ASSIGNMENT, $metadata );
 }
-add_action( 'extrachill_experiment_assignment_recorded', 'extrachill_analytics_record_experiment_assignment', 10, 3 );
+add_action( 'extrachill_experiment_assignment', 'extrachill_analytics_record_experiment_assignment', 10, 1 );
 
 /**
  * Persist a measured viewport exposure validated by Network.
  *
- * @param string $experiment_key Experiment key.
- * @param string $variant        Assigned variant.
- * @param string $surface        Experiment surface.
+ * @param array $metadata Bounded exposure metadata.
  */
-function extrachill_analytics_record_experiment_exposure( $experiment_key, $variant, $surface ) {
-	extrachill_analytics_record_experiment_event( EC_ANALYTICS_EVENT_EXPERIMENT_EXPOSURE, $experiment_key, $variant, $surface );
+function extrachill_analytics_record_experiment_exposure( $metadata ) {
+	extrachill_analytics_record_experiment_event( EC_ANALYTICS_EVENT_EXPERIMENT_EXPOSURE, $metadata );
 }
-add_action( 'extrachill_experiment_exposure_recorded', 'extrachill_analytics_record_experiment_exposure', 10, 3 );
+add_action( 'extrachill_experiment_exposure', 'extrachill_analytics_record_experiment_exposure', 10, 1 );
