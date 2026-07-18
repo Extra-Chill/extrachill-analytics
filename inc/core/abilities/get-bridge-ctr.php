@@ -11,14 +11,14 @@
  *
  *   The raw GA4 `network_bridge` channel counts UTM *arrivals*, which
  *   prefetch/prerender/crawler hits fake — it shows physically-impossible
- *   sub-1.0 pageviews/session. Both events read here, by contrast, are fired
- *   client-side with sendBeacon and therefore only exist for real,
- *   JS-executing browsers. Counting them is the bot filter: every click and
- *   every impression is a human-with-JS by construction.
+ *   sub-1.0 pageviews/session. The bridge events are fired client-side with
+ *   sendBeacon, but JS-executing scanners can still reach the collector. This
+ *   report therefore excludes rows whose canonical `event_data.is_bot` stamp
+ *   is truthy. Legacy rows without a stamp remain eligible.
  *
- *   CTR = clicks / impressions is therefore a deterministic, bot-free
- *   engagement signal that can demote the bot-inflated raw `network_bridge`
- *   session count to a diagnostic.
+ *   CTR = eligible clicks / eligible impressions is therefore a deterministic,
+ *   bot-filtered engagement signal that can demote the bot-inflated raw
+ *   `network_bridge` session count to a diagnostic.
  *
  * PER-DESTINATION GRAIN: both events now carry `dest_site` in event_data — the
  * click beacon always did, and the impression beacon does as of
@@ -86,9 +86,10 @@ function extrachill_analytics_register_bridge_ctr_ability() {
  * through the canonical events query helper (it owns the safe, prepared WHERE
  * building and returns event_data already JSON-decoded) and aggregate in PHP.
  * Both events now carry `dest_site` in event_data, so the same pass produces
- * the network total AND the per-destination-site breakdown. Volume is bounded
- * (these events fire only for humans-with-JS), so a paged fetch + PHP rollup is
- * clearer than GROUP-BY-on-JSON SQL — and it matches get-outbound-clicks.
+ * the network total AND the per-destination-site breakdown. The same pass
+ * excludes canonically bot-stamped rows before either aggregation. A paged
+ * fetch + PHP rollup is clearer than GROUP-BY-on-JSON SQL — and it matches
+ * get-outbound-clicks.
  *
  * @param array $input Input parameters.
  * @return array CTR summary.
@@ -132,7 +133,11 @@ function extrachill_analytics_ability_get_bridge_ctr( $input ) {
 
 	foreach ( (array) $rows as $row ) {
 		// extrachill_get_analytics_events() returns event_data already decoded.
-		$data      = is_array( $row->event_data ) ? $row->event_data : array();
+		$data = is_array( $row->event_data ) ? $row->event_data : array();
+		if ( ! empty( $data['is_bot'] ) ) {
+			continue;
+		}
+
 		$dest_site = isset( $data['dest_site'] ) ? (string) $data['dest_site'] : '';
 		$is_click  = ( 'bridge_click' === $row->event_type );
 
@@ -190,6 +195,6 @@ function extrachill_analytics_ability_get_bridge_ctr( $input ) {
 		'period'       => $days > 0
 			? gmdate( 'Y-m-d', (int) strtotime( "-{$days} days" ) ) . ' to ' . gmdate( 'Y-m-d' )
 			: 'all time',
-		'note'         => 'Both events fire client-side (sendBeacon) and are humans-with-JS by construction; this CTR is bot-filtered by design, unlike the raw GA4 network_bridge channel. Clicks and impressions now share the per-destination grain (one impression per rendered card carries dest_site as of extrachill-analytics#75), so by_dest_site pairs each destination\'s clicks to its own impressions. dest_site "(unknown)" rows are legacy page-level impressions emitted before the per-card change (or untagged cards); they shrink as new per-card data accumulates.',
+		'note'         => 'This CTR excludes rows whose canonical event_data.is_bot stamp is truthy; explicit false and legacy missing-stamp rows remain eligible. Client-side sendBeacon execution is not treated as proof of humanity because JS-executing scanners can reach the collector. Clicks and impressions share the per-destination grain (one impression per rendered card carries dest_site as of extrachill-analytics#75), so by_dest_site pairs each destination\'s clicks to its own impressions. dest_site "(unknown)" rows are legacy page-level impressions emitted before the per-card change (or untagged cards); they shrink as new per-card data accumulates.',
 	);
 }

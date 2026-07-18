@@ -19,7 +19,7 @@ final class GetOutboundClicksTest extends TestCase {
 	 * Clear fixture state after each test.
 	 */
 	protected function tearDown(): void {
-		unset( $GLOBALS['extrachill_analytics_outbound_fixture_rows'] );
+		unset( $GLOBALS['extrachill_analytics_event_fixture_rows'] );
 	}
 
 	/**
@@ -27,7 +27,7 @@ final class GetOutboundClicksTest extends TestCase {
 	 * classifier. They must still produce destination rows.
 	 */
 	public function test_recorded_outbound_events_produce_destination_rows(): void {
-		$GLOBALS['extrachill_analytics_outbound_fixture_rows'] = array(
+		$GLOBALS['extrachill_analytics_event_fixture_rows'] = array(
 			(object) array(
 				'event_data' => array(
 					'dest_host' => 'open.spotify.com',
@@ -72,7 +72,7 @@ final class GetOutboundClicksTest extends TestCase {
 	 * empty capture window.
 	 */
 	public function test_missing_destination_dimension_returns_diagnostic(): void {
-		$GLOBALS['extrachill_analytics_outbound_fixture_rows'] = array(
+		$GLOBALS['extrachill_analytics_event_fixture_rows'] = array(
 			(object) array(
 				'event_data' => array(
 					'category' => 'other',

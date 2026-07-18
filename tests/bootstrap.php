@@ -222,7 +222,7 @@ if ( ! function_exists( 'extrachill_analytics_events_table' ) ) {
 }
 if ( ! function_exists( 'extrachill_get_analytics_events' ) ) {
 	/**
-	 * Return a paginated outbound-report fixture when configured by a test.
+	 * Return paginated analytics event fixtures when configured by a test.
 	 *
 	 * @param array $args Event query arguments.
 	 * @return array<object> Fixture event rows.
@@ -230,8 +230,8 @@ if ( ! function_exists( 'extrachill_get_analytics_events' ) ) {
 	function extrachill_get_analytics_events( $args = array() ) {
 		$offset = isset( $args['offset'] ) ? (int) $args['offset'] : 0;
 		$limit  = isset( $args['limit'] ) ? (int) $args['limit'] : 100;
-		$rows   = isset( $GLOBALS['extrachill_analytics_outbound_fixture_rows'] )
-			? $GLOBALS['extrachill_analytics_outbound_fixture_rows']
+		$rows   = isset( $GLOBALS['extrachill_analytics_event_fixture_rows'] )
+			? $GLOBALS['extrachill_analytics_event_fixture_rows']
 			: array();
 
 		return array_slice( $rows, $offset, $limit );
