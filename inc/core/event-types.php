@@ -81,16 +81,25 @@ const EC_ANALYTICS_EVENT_REDIRECT_FIRE     = 'redirect_fire';
  * - share_click: destination, share_url.
  * - bridge_click / bridge_impression: dest_site, source_post, source_site, term.
  * - outbound_click: dest_host, dest_url, category.
- * - experiment_assignment / experiment_exposure: experiment_key, variant,
- *   surface. Assignment records allocation; exposure records actual viewport
- *   visibility. They are distinct events and neither implies the other.
  */
-const EC_ANALYTICS_EVENT_SHARE_CLICK           = 'share_click';
-const EC_ANALYTICS_EVENT_BRIDGE_CLICK          = 'bridge_click';
-const EC_ANALYTICS_EVENT_BRIDGE_IMPRESSION     = 'bridge_impression';
-const EC_ANALYTICS_EVENT_OUTBOUND_CLICK        = 'outbound_click';
-const EC_ANALYTICS_EVENT_EXPERIMENT_ASSIGNMENT = 'experiment_assignment';
-const EC_ANALYTICS_EVENT_EXPERIMENT_EXPOSURE   = 'experiment_exposure';
+const EC_ANALYTICS_EVENT_SHARE_CLICK       = 'share_click';
+const EC_ANALYTICS_EVENT_BRIDGE_CLICK      = 'bridge_click';
+const EC_ANALYTICS_EVENT_BRIDGE_IMPRESSION = 'bridge_impression';
+const EC_ANALYTICS_EVENT_OUTBOUND_CLICK    = 'outbound_click';
+
+/**
+ * First-consumer experiment contract.
+ *
+ * Network owns assignment and validates its code-owned definition before
+ * firing bounded server-side hooks. Analytics persists only these exact names
+ * and fields. Assignment records allocation; exposure records actual 50%
+ * viewport visibility. Neither event implies the other.
+ */
+const EC_ANALYTICS_EVENT_EXPERIMENT_ASSIGNMENT           = 'experiment_assignment';
+const EC_ANALYTICS_EVENT_EXPERIMENT_EXPOSURE             = 'experiment_exposure';
+const EC_ANALYTICS_EXPERIMENT_GEO_BRIDGE_HOLDOUT         = 'geo-bridge-holdout';
+const EC_ANALYTICS_EXPERIMENT_SURFACE_SINGLE_POST_BRIDGE = 'single-post-bridge';
+const EC_ANALYTICS_EXPERIMENT_VARIANTS                   = array( 'control', 'treatment' );
 
 /**
  * Browser-originated events admitted by the public adapter boundary.
@@ -102,8 +111,6 @@ const EC_ANALYTICS_PUBLIC_BROWSER_EVENTS = array(
 	EC_ANALYTICS_EVENT_BRIDGE_CLICK,
 	EC_ANALYTICS_EVENT_BRIDGE_IMPRESSION,
 	EC_ANALYTICS_EVENT_OUTBOUND_CLICK,
-	EC_ANALYTICS_EVENT_EXPERIMENT_ASSIGNMENT,
-	EC_ANALYTICS_EVENT_EXPERIMENT_EXPOSURE,
 );
 
 /** Team-experience events (team membership + Studio + Roadie usage). */

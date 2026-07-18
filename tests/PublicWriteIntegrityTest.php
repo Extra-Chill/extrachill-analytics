@@ -250,41 +250,6 @@ final class PublicWriteIntegrityTest extends TestCase {
 	}
 
 	/**
-	 * Assignment and actual viewport exposure remain separate accepted events.
-	 *
-	 * @dataProvider experiment_event_provider
-	 *
-	 * @param string $event_type Canonical experiment event.
-	 * @param string $variant    Canonical experiment variant.
-	 */
-	public function test_experiment_contract_accepts_control_and_treatment( $event_type, $variant ): void {
-		$result = extrachill_analytics_validate_public_event_write(
-			$event_type,
-			array(
-				'experiment_key' => 'geographic_bridge',
-				'variant'        => $variant,
-				'surface'        => 'single_post_bridge',
-			),
-			'/story/'
-		);
-
-		$this->assertIsArray( $result );
-		$this->assertSame( $variant, $result['event_data']['variant'] );
-	}
-
-	/**
-	 * Canonical experiment event/variant pairs.
-	 *
-	 * @return array<string,array{string,string}>
-	 */
-	public function experiment_event_provider() {
-		return array(
-			'assigned control'  => array( EC_ANALYTICS_EVENT_EXPERIMENT_ASSIGNMENT, 'control' ),
-			'exposed treatment' => array( EC_ANALYTICS_EVENT_EXPERIMENT_EXPOSURE, 'treatment' ),
-		);
-	}
-
-	/**
 	 * Public adapters reject fields that could create unbounded dimensions.
 	 *
 	 * @dataProvider unbounded_public_payload_provider
@@ -305,18 +270,9 @@ final class PublicWriteIntegrityTest extends TestCase {
 	 * @return array<string,array{string,array}>
 	 */
 	public function unbounded_public_payload_provider() {
-		$experiment = array(
-			'experiment_key' => 'geographic_bridge',
-			'variant'        => 'control',
-			'surface'        => 'single_post_bridge',
-		);
-
 		return array(
-			'unbounded experiment key' => array( EC_ANALYTICS_EVENT_EXPERIMENT_ASSIGNMENT, array_merge( $experiment, array( 'experiment_key' => str_repeat( 'x', 65 ) ) ) ),
-			'unknown variant'          => array( EC_ANALYTICS_EVENT_EXPERIMENT_EXPOSURE, array_merge( $experiment, array( 'variant' => 'challenger' ) ) ),
-			'unbounded surface'        => array( EC_ANALYTICS_EVENT_EXPERIMENT_EXPOSURE, array_merge( $experiment, array( 'surface' => str_repeat( 'x', 65 ) ) ) ),
-			'unbounded bridge term'    => array( EC_ANALYTICS_EVENT_BRIDGE_CLICK, array( 'term' => str_repeat( 'x', 201 ) ) ),
-			'unknown browser field'    => array(
+			'unbounded bridge term' => array( EC_ANALYTICS_EVENT_BRIDGE_CLICK, array( 'term' => str_repeat( 'x', 201 ) ) ),
+			'unknown browser field' => array(
 				EC_ANALYTICS_EVENT_SHARE_CLICK,
 				array(
 					'destination' => 'facebook',

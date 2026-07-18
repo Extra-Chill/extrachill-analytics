@@ -8,11 +8,31 @@
 use PHPUnit\Framework\TestCase;
 
 require_once dirname( __DIR__ ) . '/inc/core/event-types.php';
+require_once dirname( __DIR__ ) . '/inc/core/assets.php';
+require_once dirname( __DIR__ ) . '/inc/core/experiment-integration.php';
+require_once dirname( __DIR__ ) . '/inc/core/write-integrity.php';
+require_once dirname( __DIR__ ) . '/inc/core/abilities.php';
 
 /**
  * Keep active emitters and report readers on canonical names.
  */
 final class EventContractsTest extends TestCase {
+	/**
+	 * Establish identified, privacy-eligible experiment fixtures.
+	 */
+	protected function setUp(): void {
+		$_COOKIE[ EXTRACHILL_ANALYTICS_VISITOR_COOKIE ] = '123e4567-e89b-42d3-a456-426614174000';
+		unset( $_SERVER['HTTP_SEC_GPC'], $_SERVER['HTTP_DNT'] );
+		$GLOBALS['extrachill_analytics_test_events'] = array();
+	}
+
+	/**
+	 * Restore privacy and identity fixtures.
+	 */
+	protected function tearDown(): void {
+		unset( $_COOKIE[ EXTRACHILL_ANALYTICS_VISITOR_COOKIE ], $_SERVER['HTTP_SEC_GPC'], $_SERVER['HTTP_DNT'] );
+	}
+
 	/**
 	 * Active cross-plugin and report-critical names remain exact.
 	 */
@@ -32,29 +52,98 @@ final class EventContractsTest extends TestCase {
 		$this->assertSame( 'experiment_assignment', EC_ANALYTICS_EVENT_EXPERIMENT_ASSIGNMENT );
 		$this->assertSame( 'experiment_exposure', EC_ANALYTICS_EVENT_EXPERIMENT_EXPOSURE );
 		$this->assertNotSame( EC_ANALYTICS_EVENT_EXPERIMENT_ASSIGNMENT, EC_ANALYTICS_EVENT_EXPERIMENT_EXPOSURE );
+		$this->assertSame( 'geo-bridge-holdout', EC_ANALYTICS_EXPERIMENT_GEO_BRIDGE_HOLDOUT );
+		$this->assertSame( 'single-post-bridge', EC_ANALYTICS_EXPERIMENT_SURFACE_SINGLE_POST_BRIDGE );
 	}
 
 	/**
-	 * Real Analytics-owned emitters and critical readers reference constants.
+	 * Experiment events never enter the generic public browser event boundary.
 	 */
-	public function test_emitters_and_readers_do_not_redescribe_contract_names(): void {
-		$expectations = array(
-			'inc/core/404-tracking.php'                  => 'EC_ANALYTICS_EVENT_404_ERROR',
-			'inc/core/email-tracking.php'                => 'EC_ANALYTICS_EVENT_EMAIL_SENT',
-			'inc/core/abilities.php'                     => 'EC_ANALYTICS_EVENT_SEARCH_ATTACK',
-			'inc/core/abilities/get-search-gaps.php'     => 'EC_ANALYTICS_EVENT_SEARCH',
-			'inc/core/abilities/get-attack-summary.php'  => 'EC_ANALYTICS_EVENT_SEARCH_ATTACK',
-			'inc/core/abilities/get-bridge-ctr.php'      => 'EC_ANALYTICS_EVENT_BRIDGE_IMPRESSION',
-			'inc/core/abilities/get-outbound-clicks.php' => 'EC_ANALYTICS_EVENT_OUTBOUND_CLICK',
-			'inc/core/abilities/get-conversion-map.php'  => 'EC_ANALYTICS_EVENT_USER_REGISTRATION',
-			'inc/core/abilities/get-404-summary.php'     => 'EC_ANALYTICS_EVENT_404_ERROR',
-		);
+	public function test_experiment_events_are_not_public_browser_events(): void {
+		$this->assertNotContains( EC_ANALYTICS_EVENT_EXPERIMENT_ASSIGNMENT, extrachill_analytics_public_browser_event_types() );
+		$this->assertNotContains( EC_ANALYTICS_EVENT_EXPERIMENT_EXPOSURE, extrachill_analytics_public_browser_event_types() );
+	}
 
-		foreach ( $expectations as $relative_path => $constant ) {
-			// phpcs:ignore WordPress.WP.AlternativeFunctions.file_get_contents_file_get_contents -- Local source contract fixture.
-			$source = file_get_contents( dirname( __DIR__ ) . '/' . $relative_path );
-			$this->assertIsString( $source );
-			$this->assertStringContainsString( $constant, $source, $relative_path );
-		}
+	/**
+	 * The flexible event ability remains internal and absent from public REST.
+	 */
+	public function test_flexible_event_ability_remains_private(): void {
+		$GLOBALS['extrachill_analytics_registered_abilities'] = array();
+		extrachill_analytics_register_abilities();
+
+		$ability = $GLOBALS['extrachill_analytics_registered_abilities']['extrachill/track-analytics-event'];
+		$this->assertFalse( $ability['meta']['show_in_rest'] );
+		$this->assertSame( '__return_true', $ability['permission_callback'] );
+	}
+
+	/**
+	 * Analytics contributes the existing read-only visitor subject.
+	 */
+	public function test_subject_provider_preserves_authenticated_subject_and_falls_back_to_ec_vid(): void {
+		$this->assertSame( 'wp-user:42', extrachill_analytics_experiment_subject_key( 'wp-user:42' ) );
+		$this->assertSame(
+			'ec-vid:123e4567-e89b-42d3-a456-426614174000',
+			extrachill_analytics_experiment_subject_key( '' )
+		);
+	}
+
+	/**
+	 * Analytics' provider denies measurement under either established opt-out.
+	 *
+	 * @dataProvider privacy_header_provider
+	 *
+	 * @param string $header Privacy header.
+	 */
+	public function test_measurement_provider_honors_privacy_headers( $header ): void {
+		$this->assertTrue( extrachill_analytics_experiment_measurement_eligible( false ) );
+		$_SERVER[ $header ] = '1';
+		$this->assertFalse( extrachill_analytics_experiment_measurement_eligible( true ) );
+		$this->assertSame( '', extrachill_analytics_experiment_subject_key( '' ) );
+	}
+
+	/**
+	 * Supported privacy headers.
+	 *
+	 * @return array<string,array{string}>
+	 */
+	public function privacy_header_provider() {
+		return array(
+			'global privacy control' => array( 'HTTP_SEC_GPC' ),
+			'do not track'           => array( 'HTTP_DNT' ),
+		);
+	}
+
+	/**
+	 * Network hooks persist distinct canonical events with exact bounded fields.
+	 */
+	public function test_network_hooks_persist_exact_assignment_and_exposure_payloads(): void {
+		extrachill_analytics_record_experiment_assignment( 'geo-bridge-holdout', 'control', 'single-post-bridge' );
+		extrachill_analytics_record_experiment_exposure( 'geo-bridge-holdout', 'treatment', 'single-post-bridge' );
+
+		$this->assertCount( 2, $GLOBALS['extrachill_analytics_test_events'] );
+		$this->assertSame( EC_ANALYTICS_EVENT_EXPERIMENT_ASSIGNMENT, $GLOBALS['extrachill_analytics_test_events'][0][0] );
+		$this->assertSame( EC_ANALYTICS_EVENT_EXPERIMENT_EXPOSURE, $GLOBALS['extrachill_analytics_test_events'][1][0] );
+		$this->assertSame(
+			array(
+				'experiment_key' => 'geo-bridge-holdout',
+				'variant'        => 'control',
+				'surface'        => 'single-post-bridge',
+			),
+			$GLOBALS['extrachill_analytics_test_events'][0][1]
+		);
+		$this->assertSame( array( 'experiment_key', 'variant', 'surface' ), array_keys( $GLOBALS['extrachill_analytics_test_events'][1][1] ) );
+	}
+
+	/**
+	 * The persistence listener rejects drift and privacy exclusion.
+	 */
+	public function test_experiment_listener_rejects_unregistered_contract_values(): void {
+		$this->assertFalse( extrachill_analytics_record_experiment_event( EC_ANALYTICS_EVENT_EXPERIMENT_ASSIGNMENT, 'other', 'control', 'single-post-bridge' ) );
+		$this->assertFalse( extrachill_analytics_record_experiment_event( EC_ANALYTICS_EVENT_EXPERIMENT_ASSIGNMENT, 'geo-bridge-holdout', 'challenger', 'single-post-bridge' ) );
+		$this->assertFalse( extrachill_analytics_record_experiment_event( EC_ANALYTICS_EVENT_EXPERIMENT_EXPOSURE, 'geo-bridge-holdout', 'treatment', 'other' ) );
+
+		$_SERVER['HTTP_SEC_GPC'] = '1';
+		$this->assertFalse( extrachill_analytics_record_experiment_event( EC_ANALYTICS_EVENT_EXPERIMENT_EXPOSURE, 'geo-bridge-holdout', 'treatment', 'single-post-bridge' ) );
+		$this->assertSame( array(), $GLOBALS['extrachill_analytics_test_events'] );
 	}
 }

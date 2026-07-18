@@ -332,14 +332,6 @@ function extrachill_analytics_validate_public_event_data( $event_type, $event_da
 				'category'  => array( 'string', 32 ),
 			);
 			break;
-		case EC_ANALYTICS_EVENT_EXPERIMENT_ASSIGNMENT:
-		case EC_ANALYTICS_EVENT_EXPERIMENT_EXPOSURE:
-			$fields = array(
-				'experiment_key' => array( 'string', 64 ),
-				'variant'        => array( 'string', 16 ),
-				'surface'        => array( 'string', 64 ),
-			);
-			break;
 		default:
 			return true;
 	}
@@ -360,31 +352,6 @@ function extrachill_analytics_validate_public_event_data( $event_type, $event_da
 		$valid = extrachill_analytics_validate_public_event_field( $event_data, $field, $contract[0], $contract[1] );
 		if ( is_wp_error( $valid ) ) {
 			return $valid;
-		}
-	}
-
-	if ( in_array( $event_type, array( EC_ANALYTICS_EVENT_EXPERIMENT_ASSIGNMENT, EC_ANALYTICS_EVENT_EXPERIMENT_EXPOSURE ), true ) ) {
-		foreach ( array( 'experiment_key', 'variant', 'surface' ) as $required_field ) {
-			if ( empty( $event_data[ $required_field ] ) || ! preg_match( '/^[a-z0-9][a-z0-9_-]*$/', $event_data[ $required_field ] ) ) {
-				return new WP_Error(
-					'invalid_event_field',
-					__( 'Experiment fields must be non-empty bounded identifiers.', 'extrachill-analytics' ),
-					array(
-						'status' => 400,
-						'field'  => $required_field,
-					)
-				);
-			}
-		}
-		if ( ! in_array( $event_data['variant'], array( 'control', 'treatment' ), true ) ) {
-			return new WP_Error(
-				'invalid_event_field',
-				__( 'Experiment variant must be control or treatment.', 'extrachill-analytics' ),
-				array(
-					'status' => 400,
-					'field'  => 'variant',
-				)
-			);
 		}
 	}
 
