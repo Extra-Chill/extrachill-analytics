@@ -123,6 +123,18 @@ final class LinkPageAnalyticsDateRangeTest extends TestCase {
 		}
 	}
 
+	/** External consumers may pass raw paired dates to the owning provider. */
+	public function test_raw_exact_pair_is_validated_by_provider(): void {
+		$result = extrachill_analytics_provide_link_page_analytics( null, 42, 90, '2026-03-08', '2026-03-10' );
+
+		$this->assertSame( '2026-03-08', $result['start_date'] );
+		$this->assertSame( '2026-03-10', $result['end_date'] );
+		$this->assertSame( 3, $result['days'] );
+
+		$partial = extrachill_analytics_provide_link_page_analytics( null, 42, 90, '2026-03-08', '' );
+		$this->assertSame( 'invalid_analytics_date_range', $partial->code );
+	}
+
 	/** Numeric callers retain their inclusive relative site-calendar window. */
 	public function test_legacy_numeric_range_remains_supported(): void {
 		$result = extrachill_analytics_provide_link_page_analytics( null, 42, 2 );
