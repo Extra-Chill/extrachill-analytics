@@ -60,7 +60,30 @@ if ( ! function_exists( 'add_filter' ) ) {
 	 * @param mixed ...$args Hook name, callback, and optional priority/args.
 	 */
 	function add_filter( ...$args ) { // phpcs:ignore Generic.CodeAnalysis.UnusedFunctionParameter.Found
+		$GLOBALS['extrachill_analytics_test_registered_filters'][] = $args;
 		return true;
+	}
+}
+if ( ! function_exists( 'ec_get_all_site_ids' ) ) {
+	/**
+	 * Return active network site IDs supplied by a test fixture.
+	 *
+	 * @return int[] Active site IDs.
+	 */
+	function ec_get_all_site_ids() {
+		return $GLOBALS['extrachill_analytics_test_active_site_ids'] ?? array();
+	}
+}
+if ( ! function_exists( 'get_home_url' ) ) {
+	/**
+	 * Return a canonical site URL supplied by a test fixture.
+	 *
+	 * @param int    $blog_id Blog ID.
+	 * @param string $path    Requested path.
+	 * @return string Canonical site URL.
+	 */
+	function get_home_url( $blog_id, $path = '' ) { // phpcs:ignore Generic.CodeAnalysis.UnusedFunctionParameter.FoundAfterLastUsed
+		return $GLOBALS['extrachill_analytics_test_home_urls'][ $blog_id ] ?? '';
 	}
 }
 if ( ! function_exists( '__' ) ) {
