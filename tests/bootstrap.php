@@ -151,10 +151,33 @@ if ( ! function_exists( 'apply_filters' ) ) {
 	 * Stub for the WordPress apply_filters() function.
 	 *
 	 * @param string $tag    The filter hook name.
-	 * @param mixed  $value  The value to return (filters are no-ops here).
-	 * @return mixed The untouched value.
+	 * @param mixed  $value  The value to filter.
+	 * @return mixed The filtered or untouched value.
 	 */
 	function apply_filters( $tag, $value ) {
+		if ( empty( $GLOBALS['extrachill_analytics_test_apply_registered_filters'] ) ) {
+			return $value;
+		}
+
+		$filters = array_filter(
+			$GLOBALS['extrachill_analytics_test_registered_filters'] ?? array(),
+			static function ( $filter ) use ( $tag ) {
+				return isset( $filter[0] ) && $tag === $filter[0];
+			}
+		);
+		usort(
+			$filters,
+			static function ( $left, $right ) {
+				return ( $left[2] ?? 10 ) <=> ( $right[2] ?? 10 );
+			}
+		);
+
+		$args = array_slice( func_get_args(), 1 );
+		foreach ( $filters as $filter ) {
+			$args[0] = $value;
+			$value   = call_user_func_array( $filter[1], array_slice( $args, 0, $filter[3] ?? 1 ) );
+		}
+
 		return $value;
 	}
 }

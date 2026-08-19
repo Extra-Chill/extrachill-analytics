@@ -18,10 +18,8 @@ defined( 'ABSPATH' ) || exit;
  * @return string[] Canonical active-site hosts.
  */
 function extrachill_analytics_network_density_hosts( $network_hosts ) {
-	unset( $network_hosts );
-
 	if ( ! function_exists( 'ec_get_all_site_ids' ) ) {
-		return array();
+		return $network_hosts;
 	}
 
 	$hosts = array();
@@ -39,6 +37,6 @@ function extrachill_analytics_network_density_hosts( $network_hosts ) {
 		}
 	}
 
-	return array_values( array_unique( $hosts ) );
+	return empty( $hosts ) ? $network_hosts : array_values( array_unique( $hosts ) );
 }
 add_filter( 'datamachine_network_density_hosts', 'extrachill_analytics_network_density_hosts' );
