@@ -8,13 +8,14 @@
  * exercised against an in-memory fake store that mirrors the production store's
  * contract, because this repository has no WordPress-DB test scaffold. The
  * ability registration (annotations / schemas / permission) is locked down via
- * a source-string contract. WordPress function stubs live in bootstrap.php.
+ * a source-string contract.
  *
  * @package ExtraChill\Analytics
  */
 
-use PHPUnit\Framework\TestCase;
 
+require_once __DIR__ . '/class-platform-contract-fixture.php';
+require_once __DIR__ . '/class-extrachill-analytics-test-case.php';
 require_once dirname( __DIR__ ) . '/inc/core/content-format-classifier.php';
 require_once dirname( __DIR__ ) . '/inc/database/mediavine-revenue-db.php';
 require_once dirname( __DIR__ ) . '/inc/core/mediavine-csv-import.php';
@@ -27,7 +28,7 @@ require_once __DIR__ . '/class-fake-revenue-store.php';
  * Verify deterministic identity, replace/additive semantics, idempotency,
  * isolation, dry-run, validation, resolution, rollback, and the output contract.
  */
-final class IngestRevenueTest extends TestCase {
+final class IngestRevenueTest extends Extrachill_Analytics_TestCase {
 
 	/**
 	 * Fake store under test.

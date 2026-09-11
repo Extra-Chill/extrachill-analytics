@@ -23,6 +23,13 @@ abstract class Extrachill_Analytics_TestCase extends WP_UnitTestCase {
 	private $request_filters = array();
 
 	/**
+	 * Real wpdb captured at set_up and restored at tear_down.
+	 *
+	 * @var wpdb|null
+	 */
+	protected $original_wpdb;
+
+	/**
 	 * Skip the per-test database transaction on the SQLite harness.
 	 *
 	 * wp-phpunit's start_transaction() issues MySQL-only syntax
@@ -48,6 +55,8 @@ abstract class Extrachill_Analytics_TestCase extends WP_UnitTestCase {
 	 */
 	public function set_up(): void {
 		parent::set_up();
+
+		$this->original_wpdb = $GLOBALS['wpdb'];
 
 		$this->reset_analytics_tables();
 		wp_cache_flush();
@@ -102,6 +111,10 @@ abstract class Extrachill_Analytics_TestCase extends WP_UnitTestCase {
 	 * Remove request filters and restore request scope after every test.
 	 */
 	public function tear_down(): void {
+		if ( null !== $this->original_wpdb && isset( $GLOBALS['wpdb'] ) && $GLOBALS['wpdb'] !== $this->original_wpdb ) {
+			$GLOBALS['wpdb'] = $this->original_wpdb;
+		}
+
 		foreach ( $this->request_filters as $entry ) {
 			remove_filter( $entry[0], $entry[1] );
 		}

@@ -9,15 +9,15 @@
  * @package ExtraChill\Analytics
  */
 
-use PHPUnit\Framework\TestCase;
 
+require_once __DIR__ . '/class-extrachill-analytics-test-case.php';
 require_once dirname( __DIR__ ) . '/inc/core/revenue-ad-policy.php';
 require_once dirname( __DIR__ ) . '/inc/core/abilities/get-content-revenue-diagnostics.php';
 
 /**
  * Verify diagnostics contracts.
  */
-final class GetContentRevenueDiagnosticsTest extends TestCase {
+final class GetContentRevenueDiagnosticsTest extends Extrachill_Analytics_TestCase {
 
 	/**
 	 * Helper: a normalized row.
