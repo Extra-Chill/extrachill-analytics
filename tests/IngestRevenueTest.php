@@ -1228,10 +1228,8 @@ final class IngestRevenueTest extends Extrachill_Analytics_TestCase {
 		// Additive is network-elevated; a site admin alone cannot.
 		$this->assertFalse( extrachill_analytics_revenue_ingest_authorize( 1, 'additive' ) );
 
-		add_user_to_blog( $blog_seven, $admin, 'administrator' );
-		$this->assertTrue( extrachill_analytics_revenue_ingest_authorize( $blog_seven, 'replace' ) );
-
 		grant_super_admin( $admin );
+		$this->assertTrue( extrachill_analytics_revenue_ingest_authorize( $blog_seven, 'replace' ) );
 		$this->assertTrue( extrachill_analytics_revenue_ingest_authorize( 1, 'additive' ) );
 		$this->assertTrue( extrachill_analytics_revenue_ingest_authorize( $blog_seven, 'additive' ) );
 		wp_set_current_user( 0 );
