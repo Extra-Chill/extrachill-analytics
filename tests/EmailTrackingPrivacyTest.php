@@ -23,7 +23,7 @@ final class EmailTrackingPrivacyTest extends Extrachill_Analytics_TestCase {
 	 *
 	 * @var mixed
 	 */
-	private $original_wpdb;
+	protected $original_wpdb;
 
 	/**
 	 * Reset network, cron, user, and database fixtures.
