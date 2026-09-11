@@ -162,7 +162,17 @@ abstract class Extrachill_Analytics_TestCase extends WP_UnitTestCase {
 		);
 		$site  = reset( $sites );
 		$this->assertNotFalse( $site, 'Created site should exist: ' . $domain );
-		return (int) $site->blog_id;
+		$blog_id = (int) $site->blog_id;
+
+		// The harness database engine can store the new site's role options in
+		// a form that fails to unserialize, which breaks every capability check
+		// on that site. Re-seed it from the main site's role map.
+		global $wpdb;
+		$roles_option = $wpdb->get_blog_prefix( $blog_id ) . 'user_roles';
+		if ( ! is_array( get_blog_option( $blog_id, $roles_option ) ) ) {
+			update_blog_option( $blog_id, $roles_option, get_blog_option( 1, $wpdb->base_prefix . 'user_roles' ) );
+		}
+		return $blog_id;
 	}
 
 	/**

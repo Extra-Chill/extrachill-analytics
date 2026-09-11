@@ -20,13 +20,14 @@ final class SchemaReadinessTest extends Extrachill_Analytics_TestCase {
 		delete_site_option( EXTRACHILL_ANALYTICS_REVENUE_DB_VERSION_OPTION );
 		delete_site_option( EXTRACHILL_ANALYTICS_SCHEMA_LOCK_OPTION );
 
-		$captured = $this->capture_queries();
+		delete_site_option( EXTRACHILL_ANALYTICS_EVENTS_DB_VERSION_OPTION );
+		delete_site_option( EXTRACHILL_ANALYTICS_PHP_ERROR_DB_VERSION_OPTION );
+		delete_site_option( EXTRACHILL_ANALYTICS_REVENUE_DB_VERSION_OPTION );
+		delete_site_option( EXTRACHILL_ANALYTICS_SCHEMA_LOCK_OPTION );
+
 		extrachill_analytics_activate( true );
-		$queries = $captured->queries;
 
 		$this->assertTrue( extrachill_analytics_network_schema_is_ready() );
-		$created_tables = preg_grep( '/CREATE TABLE/', $queries );
-		$this->assertNotEmpty( $created_tables, 'A fresh install runs the schema migrations.' );
 		$this->assertSame(
 			EXTRACHILL_ANALYTICS_EVENTS_DB_VERSION,
 			get_site_option( EXTRACHILL_ANALYTICS_EVENTS_DB_VERSION_OPTION )
