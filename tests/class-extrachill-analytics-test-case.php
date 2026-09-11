@@ -126,13 +126,27 @@ abstract class Extrachill_Analytics_TestCase extends WP_UnitTestCase {
 	/**
 	 * Create a real network site and return its resolved blog ID.
 	 *
-	 * The SQLite adapter's insert_id can be stale after earlier DELETEs, so the
-	 * factory's return value is not trusted; the site is re-read by domain.
+	 * Two harness quirks are absorbed here: the FIRST wp_insert_site() call on
+	 * a fresh test install fails silently (the factory suppresses the error and
+	 * no site row is created), so a throwaway warm-up site is created first;
+	 * and the SQLite adapter can report a stale insert ID, so the site is
+	 * resolved by domain instead of trusting the factory return value. The
+	 * silent first-insert failure is tracked upstream against the harness.
 	 *
 	 * @param string $domain Site domain.
 	 * @return int Blog ID.
 	 */
 	protected function create_blog( string $domain ): int {
+		static $warmed_up = false;
+		if ( ! $warmed_up ) {
+			self::factory()->blog->create(
+				array(
+					'domain' => 'warmup.example.org',
+					'path'   => '/',
+				)
+			);
+			$warmed_up = true;
+		}
 		self::factory()->blog->create(
 			array(
 				'domain' => $domain,

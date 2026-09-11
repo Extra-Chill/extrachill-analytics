@@ -1301,9 +1301,10 @@ final class IngestRevenueTest extends Extrachill_Analytics_TestCase {
 	private function ingest( array $rows, array $args ): array {
 		$args = array_merge(
 			array(
-				'blog_id'  => 1,
-				'source'   => 'mediavine',
-				'hostname' => (string) wp_parse_url( home_url( '/' ), PHP_URL_HOST ),
+				'blog_id'     => 1,
+				'source'      => 'mediavine',
+				'source_site' => 'extrachill.com',
+				'hostname'    => (string) wp_parse_url( home_url( '/' ), PHP_URL_HOST ),
 			),
 			$args
 		);

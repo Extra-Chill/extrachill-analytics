@@ -210,7 +210,11 @@ final class GetBridgeCtrTest extends Extrachill_Analytics_TestCase {
 		);
 		$this->assertCount( 2, $event_queries, 'Exactly one cursor advance: pagination is keyset, not offset growth.' );
 		$this->assertStringContainsString( 'ORDER BY id DESC', $event_queries[0] );
-		$this->assertStringContainsString( 'id < ' . $ids[1], $event_queries[1] );
+		$this->assertSame( 1, preg_match( '/LIMIT (\d+)/', $event_queries[0], $m ) );
+		$page_size = (int) $m[1];
+		// Page one holds the $page_size newest rows; its smallest id is the cursor.
+		$cursor = $ids[ count( $ids ) - $page_size ];
+		$this->assertStringContainsString( 'id < ' . $cursor, $event_queries[1] );
 	}
 
 	/**
