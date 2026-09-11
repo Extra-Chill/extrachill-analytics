@@ -5,36 +5,23 @@
  * @package ExtraChill\Analytics
  */
 
-use PHPUnit\Framework\TestCase;
-
-require_once dirname( __DIR__ ) . '/inc/core/abilities/get-bridge-ctr.php';
+require_once __DIR__ . '/class-extrachill-analytics-test-case.php';
 
 /**
  * Verify bridge reporting follows the shipped lossy storage contract.
  */
-final class GetBridgeCtrTest extends TestCase {
+final class GetBridgeCtrTest extends Extrachill_Analytics_TestCase {
 
 	/**
-	 * Clear fixture state after each test.
-	 */
-	protected function tearDown(): void {
-		unset(
-			$GLOBALS['extrachill_analytics_bridge_fixture_rows'],
-			$GLOBALS['extrachill_analytics_bridge_query_args']
-		);
-	}
-
-	/**
-	 * Build one canonical event fixture.
+	 * Insert one canonical event fixture into the real events table.
 	 *
-	 * @param int       $id         Row ID.
 	 * @param string    $type       Event type.
 	 * @param string    $dest       Destination site.
 	 * @param bool|null $is_bot     Optional canonical bot stamp.
 	 * @param string    $visitor_id Optional visitor ID.
-	 * @return object
+	 * @return int Row ID.
 	 */
-	private function event( $id, $type, $dest = 'events', $is_bot = null, $visitor_id = '00000000-0000-4000-8000-000000000001' ) {
+	private function event( $type, $dest = 'events', $is_bot = null, $visitor_id = '00000000-0000-4000-8000-000000000001' ) {
 		$data = array(
 			'dest_site'   => $dest,
 			'source_post' => 42,
@@ -45,27 +32,30 @@ final class GetBridgeCtrTest extends TestCase {
 			$data['is_bot'] = $is_bot;
 		}
 
-		return (object) array(
-			'id'         => $id,
-			'event_type' => $type,
-			'event_data' => $data,
-			'source_url' => '/story/',
-			'blog_id'    => 1,
-			'user_id'    => null,
-			'visitor_id' => $visitor_id,
-			'created_at' => '2026-07-18 01:00:00',
+		global $wpdb;
+		$wpdb->insert(
+			extrachill_analytics_events_table(),
+			array(
+				'event_type' => $type,
+				'event_data' => wp_json_encode( $data ),
+				'source_url' => '/story/',
+				'blog_id'    => 1,
+				'user_id'    => null,
+				'visitor_id' => '' === $visitor_id ? null : $visitor_id,
+				'created_at' => '2026-07-18 01:00:00',
+			),
+			array( '%s', '%s', '%s', '%d', '%d', '%s', '%s' )
 		);
+		return (int) $wpdb->insert_id;
 	}
 
 	/**
 	 * Duplicate-looking rows remain independent without an opportunity ID.
 	 */
 	public function test_duplicate_lossy_impressions_are_not_deduplicated(): void {
-		$GLOBALS['extrachill_analytics_bridge_fixture_rows'] = array(
-			$this->event( 1, 'bridge_impression' ),
-			$this->event( 2, 'bridge_impression' ),
-			$this->event( 3, 'bridge_click' ),
-		);
+		$this->event( 'bridge_impression' );
+		$this->event( 'bridge_impression' );
+		$this->event( 'bridge_click' );
 
 		$report = extrachill_analytics_ability_get_bridge_ctr( array( 'days' => 0 ) );
 
@@ -81,11 +71,9 @@ final class GetBridgeCtrTest extends TestCase {
 	 * Independent writes may produce an honest ratio over 100 percent.
 	 */
 	public function test_clicks_exceeding_impressions_are_not_clamped(): void {
-		$GLOBALS['extrachill_analytics_bridge_fixture_rows'] = array(
-			$this->event( 1, 'bridge_impression' ),
-			$this->event( 2, 'bridge_click' ),
-			$this->event( 3, 'bridge_click' ),
-		);
+		$this->event( 'bridge_impression' );
+		$this->event( 'bridge_click' );
+		$this->event( 'bridge_click' );
 
 		$report = extrachill_analytics_ability_get_bridge_ctr( array( 'days' => 0 ) );
 
@@ -99,14 +87,10 @@ final class GetBridgeCtrTest extends TestCase {
 	 * Truthy bot stamps are excluded before totals and destinations.
 	 */
 	public function test_bot_stamped_rows_are_excluded_and_unstamped_rows_remain(): void {
-		$bot_click                     = $this->event( 4, 'bridge_click', 'etcpasswd', true, '' );
-		$bot_click->event_data['term'] = 'scanner payload';
-		$GLOBALS['extrachill_analytics_bridge_fixture_rows'] = array(
-			$bot_click,
-			$this->event( 3, 'bridge_impression', 'events', 1, '' ),
-			$this->event( 2, 'bridge_impression', 'events', false ),
-			$this->event( 1, 'bridge_click', 'events' ),
-		);
+		$this->event( 'bridge_click', 'etcpasswd', true, '' );
+		$this->event( 'bridge_impression', 'events', 1, '' );
+		$this->event( 'bridge_impression', 'events', false );
+		$this->event( 'bridge_click', 'events' );
 
 		$report = extrachill_analytics_ability_get_bridge_ctr( array( 'days' => 0 ) );
 
@@ -121,11 +105,9 @@ final class GetBridgeCtrTest extends TestCase {
 	 * Legacy destination-less rows remain visible with mixed coverage.
 	 */
 	public function test_legacy_mixed_rows_have_partial_destination_coverage(): void {
-		$GLOBALS['extrachill_analytics_bridge_fixture_rows'] = array(
-			$this->event( 3, 'bridge_impression', '' ),
-			$this->event( 2, 'bridge_click', '' ),
-			$this->event( 1, 'bridge_impression', 'events' ),
-		);
+		$this->event( 'bridge_impression', '' );
+		$this->event( 'bridge_click', '' );
+		$this->event( 'bridge_impression', 'events' );
 
 		$report = extrachill_analytics_ability_get_bridge_ctr( array( 'days' => 0 ) );
 
@@ -140,9 +122,7 @@ final class GetBridgeCtrTest extends TestCase {
 	 * Legacy zero-denominator keys retain numeric scalar types.
 	 */
 	public function test_zero_impressions_preserve_legacy_types(): void {
-		$GLOBALS['extrachill_analytics_bridge_fixture_rows'] = array(
-			$this->event( 1, 'bridge_click' ),
-		);
+		$this->event( 'bridge_click' );
 
 		$report = extrachill_analytics_ability_get_bridge_ctr( array( 'days' => 0 ) );
 
@@ -158,12 +138,10 @@ final class GetBridgeCtrTest extends TestCase {
 	 * Multiple destinations retain independent stored ratios.
 	 */
 	public function test_multiple_destinations_are_aggregated_independently(): void {
-		$GLOBALS['extrachill_analytics_bridge_fixture_rows'] = array(
-			$this->event( 4, 'bridge_click', 'artist' ),
-			$this->event( 3, 'bridge_click', 'events' ),
-			$this->event( 2, 'bridge_impression', 'events' ),
-			$this->event( 1, 'bridge_impression', 'events' ),
-		);
+		$this->event( 'bridge_click', 'artist' );
+		$this->event( 'bridge_click', 'events' );
+		$this->event( 'bridge_impression', 'events' );
+		$this->event( 'bridge_impression', 'events' );
 
 		$report = extrachill_analytics_ability_get_bridge_ctr( array( 'days' => 0 ) );
 
@@ -183,11 +161,11 @@ final class GetBridgeCtrTest extends TestCase {
 	 * The newest IDs are selected in true descending order before truncation.
 	 */
 	public function test_descending_id_order_and_truncation_are_stable(): void {
-		$GLOBALS['extrachill_analytics_bridge_fixture_rows'] = array(
-			$this->event( 1, 'bridge_click', 'oldest' ),
-			$this->event( 3, 'bridge_impression', 'newest' ),
-			$this->event( 2, 'bridge_click', 'middle' ),
-		);
+		$oldest = $this->event( 'bridge_click', 'oldest' );
+		$newest = $this->event( 'bridge_impression', 'newest' );
+		$middle = $this->event( 'bridge_click', 'middle' );
+		$this->assertGreaterThan( $oldest, $middle );
+		$this->assertGreaterThan( $middle, $newest );
 
 		$report = extrachill_analytics_ability_get_bridge_ctr(
 			array(
@@ -201,32 +179,42 @@ final class GetBridgeCtrTest extends TestCase {
 		$this->assertSame( 'truncated', $report['coverage']['status'] );
 		$this->assertSame( array( 'newest', 'middle' ), array_column( $report['by_dest_site'], 'dest_site' ) );
 		$this->assertSame( 'id DESC', $report['pagination']['order'] );
-		$this->assertArrayNotHasKey( 'offset', $GLOBALS['extrachill_analytics_bridge_query_args'][0] );
+		$this->assertStringNotContainsString( 'OFFSET', $report['pagination']['query'] ?? '' );
 	}
 
 	/**
 	 * Multi-page reads advance with an exclusive ID cursor, never an offset.
 	 */
 	public function test_keyset_pagination_uses_last_descending_id(): void {
-		$rows = array();
-		for ( $id = 1; $id <= 1002; ++$id ) {
-			$rows[] = $this->event( $id, 'bridge_impression' );
+		$ids = array();
+		for ( $i = 0; $i < 1002; ++$i ) {
+			$ids[] = $this->event( 'bridge_impression' );
 		}
-		$GLOBALS['extrachill_analytics_bridge_fixture_rows'] = array_reverse( $rows );
+		$ids = array_reverse( $ids );
 
-		$report = extrachill_analytics_ability_get_bridge_ctr(
+		$captured = $this->capture_queries();
+		$report   = extrachill_analytics_ability_get_bridge_ctr(
 			array(
 				'days'       => 0,
 				'max_events' => 1001,
 			)
 		);
+		$captured['remove']();
 
 		$this->assertSame( 1001, $report['impressions'] );
 		$this->assertTrue( $report['coverage']['truncated'] );
-		$this->assertCount( 2, $GLOBALS['extrachill_analytics_bridge_query_args'] );
-		$this->assertArrayNotHasKey( 'before_id', $GLOBALS['extrachill_analytics_bridge_query_args'][0] );
-		$this->assertSame( 3, $GLOBALS['extrachill_analytics_bridge_query_args'][1]['before_id'] );
-		$this->assertArrayNotHasKey( 'offset', $GLOBALS['extrachill_analytics_bridge_query_args'][1] );
+		$event_queries = array_values(
+			array_filter(
+				$captured->queries,
+				static function ( $query ) {
+					return str_contains( $query, 'extrachill_analytics_events' ) && str_contains( $query, 'SELECT' );
+				}
+			)
+		);
+		$this->assertCount( 2, $event_queries );
+		$this->assertStringNotContainsString( 'OFFSET', $event_queries[0] );
+		$this->assertStringContainsString( 'id < ' . $ids[1000], $event_queries[1] );
+		$this->assertStringNotContainsString( 'OFFSET', $event_queries[1] );
 	}
 
 	/**
@@ -246,10 +234,8 @@ final class GetBridgeCtrTest extends TestCase {
 	 * Coverage discloses anonymous eligible rows and privacy limitations.
 	 */
 	public function test_coverage_status_discloses_anonymous_rows(): void {
-		$GLOBALS['extrachill_analytics_bridge_fixture_rows'] = array(
-			$this->event( 1, 'bridge_impression', 'events', null, '' ),
-			$this->event( 2, 'bridge_click' ),
-		);
+		$this->event( 'bridge_impression', 'events', null, '' );
+		$this->event( 'bridge_click' );
 
 		$report = extrachill_analytics_ability_get_bridge_ctr( array( 'days' => 0 ) );
 

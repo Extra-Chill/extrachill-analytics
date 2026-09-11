@@ -1,6 +1,12 @@
 <?php
 /**
- * WPDB fixture for email privacy tests.
+ * WPDB fixture for the email advisory-lock cleanup tests.
+ *
+ * GET_LOCK()/RELEASE_LOCK() are MySQL-only advisory mutexes the SQLite harness
+ * database cannot execute, and per-query failure injection needs a
+ * deterministic surface no SQLite query can produce on demand. This double
+ * stands in for the narrow wpdb surface inc/core/email-tracking.php uses while
+ * those tests run; the real $wpdb is restored in tear_down().
  *
  * @package ExtraChill\Analytics
  */
@@ -66,6 +72,17 @@ final class Email_Privacy_Wpdb_Fixture {
 	public $last_error = '';
 
 	/**
+	 * No-op sink matching the real wpdb error-silencing surface.
+	 *
+	 * @param bool $errors Whether to suppress errors.
+	 * @return bool Prior value.
+	 */
+	public function suppress_errors( $errors ) {
+		unset( $errors );
+		return true;
+	}
+
+	/**
 	 * Substitute basic wpdb placeholders for query assertions.
 	 *
 	 * @param string $query SQL with placeholders.
@@ -120,5 +137,17 @@ final class Email_Privacy_Wpdb_Fixture {
 	public function get_results( $query ) {
 		$this->queries[] = $query;
 		return array_shift( $this->rows );
+	}
+
+	/**
+	 * Return the configured single-row result.
+	 *
+	 * @param string $query Prepared SQL.
+	 * @return object|null
+	 */
+	public function get_row( $query ) {
+		$this->queries[] = $query;
+		$page            = array_shift( $this->rows );
+		return is_array( $page ) ? reset( $page ) : null;
 	}
 }
