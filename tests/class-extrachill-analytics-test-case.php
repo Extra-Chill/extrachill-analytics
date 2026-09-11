@@ -253,7 +253,7 @@ abstract class Extrachill_Analytics_TestCase extends WP_UnitTestCase {
 
 	/**
 	 * Delete every row from the plugin's custom tables.
-	 *
+	 */
 	protected function reset_analytics_tables(): void {
 		global $wpdb;
 		foreach ( array(
