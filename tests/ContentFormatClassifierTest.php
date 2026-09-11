@@ -34,7 +34,12 @@ final class ContentFormatClassifierTest extends Extrachill_Analytics_TestCase {
 		);
 		foreach ( $categories as $slug ) {
 			if ( ! isset( $this->term_ids[ $slug ] ) ) {
-				$this->term_ids[ $slug ] = (int) self::factory()->category->create( array( 'slug' => $slug ) );
+				$existing = get_term_by( 'slug', $slug, 'category' );
+				if ( $existing instanceof WP_Term ) {
+					$this->term_ids[ $slug ] = (int) $existing->term_id;
+				} else {
+					$this->term_ids[ $slug ] = (int) self::factory()->category->create( array( 'slug' => $slug ) );
+				}
 			}
 			wp_set_object_terms( $post_id, array( $this->term_ids[ $slug ] ), 'category', true );
 		}

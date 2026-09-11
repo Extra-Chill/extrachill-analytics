@@ -457,7 +457,7 @@ final class GetContentRevenuePagesTest extends Extrachill_Analytics_TestCase {
 	 * run-in-blog wrapper restores the original site afterwards.
 	 */
 	public function test_relative_path_uses_target_blog_hostname_and_restores_context(): void {
-		$target_blog = self::factory()->blog->create( array( 'domain' => 'events.example.org', 'path' => '/' ) );
+		$target_blog = $this->create_blog( 'events.example.org' );
 		switch_to_blog( $target_blog );
 		$this->set_permalink_structure( '/%postname%/' );
 		$expected_post_id = (int) self::factory()->post->create(

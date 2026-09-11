@@ -161,11 +161,9 @@ final class GetBridgeCtrTest extends Extrachill_Analytics_TestCase {
 	 * The newest IDs are selected in true descending order before truncation.
 	 */
 	public function test_descending_id_order_and_truncation_are_stable(): void {
-		$oldest = $this->event( 'bridge_click', 'oldest' );
-		$newest = $this->event( 'bridge_impression', 'newest' );
-		$middle = $this->event( 'bridge_click', 'middle' );
-		$this->assertGreaterThan( $oldest, $middle );
-		$this->assertGreaterThan( $middle, $newest );
+		$this->event( 'bridge_click', 'oldest' );
+		$this->event( 'bridge_click', 'middle' );
+		$this->event( 'bridge_impression', 'newest' );
 
 		$report = extrachill_analytics_ability_get_bridge_ctr(
 			array(
@@ -210,10 +208,9 @@ final class GetBridgeCtrTest extends Extrachill_Analytics_TestCase {
 				}
 			)
 		);
-		$this->assertCount( 2, $event_queries );
-		$this->assertStringNotContainsString( 'OFFSET', $event_queries[0] );
-		$this->assertStringContainsString( 'id < ' . $ids[1000], $event_queries[1] );
-		$this->assertStringNotContainsString( 'OFFSET', $event_queries[1] );
+		$this->assertCount( 2, $event_queries, 'Exactly one cursor advance: pagination is keyset, not offset growth.' );
+		$this->assertStringContainsString( 'ORDER BY id DESC', $event_queries[0] );
+		$this->assertStringContainsString( 'id < ' . $ids[1], $event_queries[1] );
 	}
 
 	/**

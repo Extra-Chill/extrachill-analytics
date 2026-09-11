@@ -124,6 +124,34 @@ abstract class Extrachill_Analytics_TestCase extends WP_UnitTestCase {
 	}
 
 	/**
+	 * Create a real network site and return its resolved blog ID.
+	 *
+	 * The SQLite adapter's insert_id can be stale after earlier DELETEs, so the
+	 * factory's return value is not trusted; the site is re-read by domain.
+	 *
+	 * @param string $domain Site domain.
+	 * @return int Blog ID.
+	 */
+	protected function create_blog( string $domain ): int {
+		self::factory()->blog->create(
+			array(
+				'domain' => $domain,
+				'path'   => '/',
+			)
+		);
+		$sites = get_sites(
+			array(
+				'domain' => $domain,
+				'path'   => '/',
+				'number' => 1,
+			)
+		);
+		$site  = reset( $sites );
+		$this->assertNotFalse( $site, 'Created site should exist: ' . $domain );
+		return (int) $site->blog_id;
+	}
+
+	/**
 	 * Simulate a public request method and host.
 	 *
 	 * @param string $host   HTTP_HOST value.

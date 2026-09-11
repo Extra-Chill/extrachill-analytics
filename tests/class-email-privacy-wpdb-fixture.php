@@ -81,6 +81,27 @@ final class Email_Privacy_Wpdb_Fixture {
 	}
 
 	/**
+	 * Proxy wpdb properties (table names, prefixes, insert_id) to the real wpdb.
+	 *
+	 * @param string $name Property name.
+	 * @return mixed
+	 */
+	public function __get( $name ) {
+		return $this->real->{$name};
+	}
+
+	/**
+	 * Proxy wpdb method calls not overridden here to the real wpdb.
+	 *
+	 * @param string $name      Method name.
+	 * @param array  $arguments Arguments.
+	 * @return mixed
+	 */
+	public function __call( $name, array $arguments ) {
+		return $this->real->{$name}( ...$arguments );
+	}
+
+	/**
 	 * No-op sink matching the real wpdb error-silencing surface.
 	 *
 	 * @param bool $errors Whether to suppress errors.

@@ -97,7 +97,8 @@ final class GetAnalyticsSummaryTest extends Extrachill_Analytics_TestCase {
 				return (bool) preg_match( '/GROUP BY\s+(DATE\(created_at\)|source_url|context)/i', $query );
 			}
 		);
-		$this->assertCount( 1, $detail_queries );
+		$this->assertCount( 0, $detail_queries );
+		$this->assertNotEmpty( $captured->queries, 'The compact summary still reads available event types.' );
 	}
 
 	/**

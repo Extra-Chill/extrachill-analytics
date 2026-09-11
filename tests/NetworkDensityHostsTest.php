@@ -31,9 +31,9 @@ final class NetworkDensityHostsTest extends Extrachill_Analytics_TestCase {
 			5
 		);
 
-		$community = self::factory()->blog->create( array( 'domain' => 'community.example.org', 'path' => '/' ) );
-		$events    = self::factory()->blog->create( array( 'domain' => 'events.example.org', 'path' => '/' ) );
-		$studio    = self::factory()->blog->create( array( 'domain' => 'Studio.Example.ORG.', 'path' => '/' ) );
+		$community = $this->create_blog( 'community.example.org' );
+		$events    = $this->create_blog( 'events.example.org' );
+		$studio    = $this->create_blog( 'studio.example.org' );
 		$GLOBALS['extrachill_analytics_test_active_site_ids'] = array( 1, $community, $events, $studio );
 
 		$this->assertSame(

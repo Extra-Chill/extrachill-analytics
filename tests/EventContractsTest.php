@@ -155,6 +155,9 @@ final class EventContractsTest extends Extrachill_Analytics_TestCase {
 		$rows            = $this->event_rows();
 		$assignment_data = $this->event_data( $rows[0] );
 		$exposure_data   = $this->event_data( $rows[1] );
+		// The real writer stamps is_bot at write time; the recorder contract
+		// under test is the payload the recorder itself built.
+		unset( $assignment_data['is_bot'], $exposure_data['is_bot'] );
 		$this->assertSame( EC_ANALYTICS_EVENT_EXPERIMENT_ASSIGNMENT, $rows[0]->event_type );
 		$this->assertSame( EC_ANALYTICS_EVENT_EXPERIMENT_EXPOSURE, $rows[1]->event_type );
 		$this->assertSame(

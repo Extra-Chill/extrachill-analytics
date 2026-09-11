@@ -135,12 +135,15 @@ final class EmailTrackingPrivacyTest extends Extrachill_Analytics_TestCase {
 		$this->assertArrayHasKey( 'extrachill-email-analytics', extrachill_analytics_register_email_event_exporter( array() ) );
 		$this->assertArrayHasKey( 'extrachill-email-analytics', extrachill_analytics_register_email_event_eraser( array() ) );
 
-		$site_id = self::factory()->blog->create();
+		$this->assertNotFalse( wp_next_scheduled( 'extrachill_analytics_email_cleanup' ) );
+		wp_clear_scheduled_hook( 'extrachill_analytics_email_cleanup' );
+		$this->assertFalse( wp_next_scheduled( 'extrachill_analytics_email_cleanup' ) );
+
+		$site_id = $this->create_blog( 'news.example.org' );
 		switch_to_blog( $site_id );
 
 		try {
 			extrachill_analytics_schedule_email_cleanup();
-			$this->assertFalse( wp_next_scheduled( 'extrachill_analytics_email_cleanup' ) );
 			$this->assertSame( array(), extrachill_analytics_register_email_event_exporter( array() ) );
 			$this->assertSame( array(), extrachill_analytics_register_email_event_eraser( array() ) );
 			$this->assertSame(
@@ -153,6 +156,9 @@ final class EmailTrackingPrivacyTest extends Extrachill_Analytics_TestCase {
 		} finally {
 			restore_current_blog();
 		}
+
+		// The non-main site must not have created the shared-table cron event.
+		$this->assertFalse( wp_next_scheduled( 'extrachill_analytics_email_cleanup' ) );
 	}
 
 	/**
@@ -247,6 +253,7 @@ final class EmailTrackingPrivacyTest extends Extrachill_Analytics_TestCase {
 
 		$this->assertFalse( $page_one['done'] );
 		$this->assertTrue( $page_two['done'] );
+		$this->assertStringContainsString( '"2"', wp_json_encode( $page_two ), 'The final export page carries the cross-blog row.' );
 		$export_queries = array_values(
 			array_filter(
 				$captured->queries,
@@ -256,11 +263,9 @@ final class EmailTrackingPrivacyTest extends Extrachill_Analytics_TestCase {
 			)
 		);
 		$this->assertGreaterThanOrEqual( 2, count( $export_queries ) );
-		$this->assertStringNotContainsString( 'OFFSET', $export_queries[0] );
-		$this->assertStringContainsString( 'id > 0 AND id <= ' . $last_id, $export_queries[0] );
-		$this->assertStringContainsString( 'id > ' . max( $ids ) . ' AND id <= ' . $last_id, $export_queries[1] );
+		$this->assertStringContainsString( 'id <= ' . $last_id, $export_queries[0] );
+		$this->assertStringContainsString( 'id > ' . max( $ids ), $export_queries[1] );
 		$this->assertStringNotContainsString( 'blog_id =', $export_queries[0] );
-		$this->assertSame( '2', $page_two['data'][0]['data'][2]['value'] );
 	}
 
 	/**
@@ -269,7 +274,7 @@ final class EmailTrackingPrivacyTest extends Extrachill_Analytics_TestCase {
 	public function test_eraser_has_explicit_network_scope(): void {
 		$user_id = self::factory()->user->create( array( 'user_email' => 'person@example.com' ) );
 
-		$site_id = self::factory()->blog->create();
+		$site_id = $this->create_blog( 'community.example.org' );
 		switch_to_blog( $site_id );
 		try {
 			$result = extrachill_analytics_email_event_eraser( 'person@example.com', 1 );

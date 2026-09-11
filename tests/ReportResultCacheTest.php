@@ -86,6 +86,9 @@ final class ReportResultCacheTest extends Extrachill_Analytics_TestCase {
 	 * A warm read returns the original measurement without recomputation.
 	 */
 	public function test_warm_read_preserves_as_of_and_exposes_freshness(): void {
+		// Core's set_site_transient() only persists the timeout option when no
+		// external object cache is active, so this test runs uncached.
+		$this->set_ext_object_cache( false );
 		$calls   = 0;
 		$compute = static function () use ( &$calls ) {
 			++$calls;
