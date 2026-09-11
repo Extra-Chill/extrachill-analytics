@@ -58,6 +58,13 @@ abstract class Extrachill_Analytics_TestCase extends WP_UnitTestCase {
 
 		$this->original_wpdb = $GLOBALS['wpdb'];
 
+		// The harness install stores the site_admins network option as the
+		// literal string "" instead of an array, which breaks grant_super_admin()
+		// and every manage_network_options check. Restore the WordPress default.
+		if ( ! is_array( get_site_option( 'site_admins' ) ) ) {
+			update_site_option( 'site_admins', array( sanitize_user( 'admin' ) ) );
+		}
+
 		$this->reset_analytics_tables();
 		wp_cache_flush();
 
