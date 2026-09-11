@@ -23,7 +23,6 @@ final class SchemaReadinessTest extends Extrachill_Analytics_TestCase {
 		$captured = $this->capture_queries();
 		$result   = extrachill_analytics_activate( true );
 		$queries  = $captured->queries;
-		$captured->remove();
 
 		$this->assertTrue( $result );
 		$this->assertTrue( extrachill_analytics_network_schema_is_ready() );
@@ -44,7 +43,6 @@ final class SchemaReadinessTest extends Extrachill_Analytics_TestCase {
 		$captured = $this->capture_queries();
 		$result   = extrachill_analytics_install_network_schema();
 		$queries  = $captured->queries;
-		$captured->remove();
 
 		$this->assertTrue( $result );
 		$created_tables = preg_grep( '/CREATE TABLE/', $queries );

@@ -87,7 +87,6 @@ final class GetAnalyticsSummaryTest extends Extrachill_Analytics_TestCase {
 	public function test_all_event_summary_contract_is_unchanged(): void {
 		$captured = $this->capture_queries();
 		$summary  = extrachill_analytics_ability_get_summary( array( 'days' => 28 ) );
-		$captured['remove']();
 
 		$this->assertArrayNotHasKey( 'by_date', $summary );
 		$this->assertArrayNotHasKey( 'by_source', $summary );
@@ -115,7 +114,6 @@ final class GetAnalyticsSummaryTest extends Extrachill_Analytics_TestCase {
 				'event_type' => EC_ANALYTICS_EVENT_ARTIST_ACCESS_GRANTED,
 			)
 		);
-		$captured['remove']();
 
 		$this->assertSame( 'artist_access_granted', $summary['event_types'][0]['event_type'] );
 		$this->assertSame( 2, $summary['event_types'][0]['count'] );

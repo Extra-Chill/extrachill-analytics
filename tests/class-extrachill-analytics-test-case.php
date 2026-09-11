@@ -266,20 +266,19 @@ abstract class Extrachill_Analytics_TestCase extends WP_UnitTestCase {
 	/**
 	 * Capture every executed SQL string through the wpdb query filter.
 	 *
-	 * @return object Captured queries on ->queries plus a ->remove() unwinder.
+	 * The filter is removed automatically in tear_down().
+	 *
+	 * @return object Captured queries on ->queries.
 	 */
 	protected function capture_queries(): object {
-		$captured           = new stdClass();
-		$captured->queries  = array();
-		$captured_callback  = static function ( $query ) use ( $captured ) {
+		$captured          = new stdClass();
+		$captured->queries = array();
+		$captured_callback = static function ( $query ) use ( $captured ) {
 			$captured->queries[] = (string) $query;
 			return $query;
 		};
-		$captured->callback = $captured_callback;
 		add_filter( 'query', $captured_callback );
-		$captured->remove = static function () use ( $captured_callback ) {
-			remove_filter( 'query', $captured_callback );
-		};
+		$this->request_filters[] = array( 'query', $captured_callback );
 		return $captured;
 	}
 }

@@ -1,20 +1,29 @@
 <?php
 /**
- * WPDB fixture for the email advisory-lock cleanup tests.
+ * WPDB double for the email advisory-lock cleanup tests.
  *
  * GET_LOCK()/RELEASE_LOCK() are MySQL-only advisory mutexes the SQLite harness
  * database cannot execute, and per-query failure injection needs a
- * deterministic surface no SQLite query can produce on demand. This double
- * stands in for the narrow wpdb surface inc/core/email-tracking.php uses while
- * those tests run; the real $wpdb is restored in tear_down().
+ * deterministic surface no SQLite query can produce on demand. The double
+ * serves configured per-query results (lock acquisition, batch writes, batch
+ * reads, injected errors) and delegates every unconfigured call to the real
+ * wpdb, so options, cron, and cache keep their real behavior. The real wpdb is
+ * restored in tear_down().
  *
  * @package ExtraChill\Analytics
  */
 
 /**
- * Capture prepared queries and return configured database results.
+ * Configured-result wpdb double delegating unconfigured calls to the real wpdb.
  */
 final class Email_Privacy_Wpdb_Fixture {
+	/**
+	 * Real wpdb used for every unconfigured call.
+	 *
+	 * @var wpdb
+	 */
+	private $real;
+
 	/**
 	 * Configured mutation results.
 	 *
@@ -35,13 +44,6 @@ final class Email_Privacy_Wpdb_Fixture {
 	 * @var array<int, array<object>>
 	 */
 	public $rows = array();
-
-	/**
-	 * Snapshot maximum event ID.
-	 *
-	 * @var int
-	 */
-	public $max_id = 0;
 
 	/**
 	 * Configured scalar results for advisory-lock queries.
@@ -72,6 +74,13 @@ final class Email_Privacy_Wpdb_Fixture {
 	public $last_error = '';
 
 	/**
+	 * Capture the real wpdb at construction.
+	 */
+	public function __construct() {
+		$this->real = $GLOBALS['wpdb'];
+	}
+
+	/**
 	 * No-op sink matching the real wpdb error-silencing surface.
 	 *
 	 * @param bool $errors Whether to suppress errors.
@@ -94,7 +103,7 @@ final class Email_Privacy_Wpdb_Fixture {
 		return preg_replace_callback(
 			'/%[sdf]/',
 			function ( $placeholder ) use ( $args, &$index ) {
-				$value = $args[ $index++ ];
+				$value = $args[ $index++ ] ?? '';
 				return '%s' === $placeholder[0] ? "'" . addslashes( (string) $value ) . "'" : (string) (int) $value;
 			},
 			$query
@@ -102,52 +111,82 @@ final class Email_Privacy_Wpdb_Fixture {
 	}
 
 	/**
-	 * Record a mutation and return its configured result.
+	 * Serve a configured mutation result, then delegate.
 	 *
 	 * @param string $query Prepared SQL.
 	 * @return int|false
 	 */
 	public function query( $query ) {
 		$this->queries[]  = $query;
-		$this->last_error = (string) array_shift( $this->query_errors );
+		$this->last_error = (string) ( empty( $this->query_errors ) ? '' : array_shift( $this->query_errors ) );
+		if ( empty( $this->query_results ) ) {
+			return $this->real->query( $query );
+		}
 		return array_shift( $this->query_results );
 	}
 
 	/**
-	 * Record a scalar query and return the snapshot maximum.
+	 * Serve a configured scalar result, then delegate.
 	 *
 	 * @param string $query Prepared SQL.
-	 * @return int
+	 * @return mixed
 	 */
 	public function get_var( $query ) {
 		$this->queries[]  = $query;
-		$this->last_error = (string) array_shift( $this->var_errors );
-		if ( $this->var_results ) {
-			return array_shift( $this->var_results );
+		$this->last_error = (string) ( empty( $this->var_errors ) ? '' : array_shift( $this->var_errors ) );
+		if ( empty( $this->var_results ) ) {
+			return $this->real->get_var( $query );
 		}
-		return $this->max_id;
+		return array_shift( $this->var_results );
 	}
 
 	/**
-	 * Record a row query and return its configured page.
+	 * Serve a configured result page, then delegate.
 	 *
 	 * @param string $query Prepared SQL.
 	 * @return array<object>|false
 	 */
 	public function get_results( $query ) {
 		$this->queries[] = $query;
+		if ( empty( $this->rows ) ) {
+			return $this->real->get_results( $query );
+		}
 		return array_shift( $this->rows );
 	}
 
 	/**
-	 * Return the configured single-row result.
+	 * Delegate row reads to the real wpdb.
 	 *
 	 * @param string $query Prepared SQL.
 	 * @return object|null
 	 */
 	public function get_row( $query ) {
 		$this->queries[] = $query;
-		$page            = array_shift( $this->rows );
-		return is_array( $page ) ? reset( $page ) : null;
+		return $this->real->get_row( $query );
+	}
+
+	/**
+	 * Delegate inserts to the real wpdb.
+	 *
+	 * @param string $table  Table name.
+	 * @param array  $data   Column values.
+	 * @param array  $format Formats.
+	 * @return int|false
+	 */
+	public function insert( $table, array $data, $format = null ) {
+		unset( $format );
+		return $this->real->insert( $table, $data );
+	}
+
+	/**
+	 * Delegate updates to the real wpdb.
+	 *
+	 * @param string $table  Table name.
+	 * @param array  $data   Column values.
+	 * @param array  $where  Where conditions.
+	 * @return int|false
+	 */
+	public function update( $table, array $data, array $where ) {
+		return $this->real->update( $table, $data, $where );
 	}
 }

@@ -327,7 +327,6 @@ final class ConversionMapOutcomesTest extends Extrachill_Analytics_TestCase {
 				$consumed = array_merge( $consumed, array_map( static fn( $row ) => (int) $row->id, $page ) );
 			}
 		);
-		$captured->remove();
 
 		$this->assertCount( 501, $consumed );
 		$this->assertSame( max( $ids ), end( $consumed ) );

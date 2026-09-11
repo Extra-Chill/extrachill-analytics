@@ -244,7 +244,6 @@ final class EmailTrackingPrivacyTest extends Extrachill_Analytics_TestCase {
 		$captured = $this->capture_queries();
 		$page_one = extrachill_analytics_email_event_exporter( 'person@example.com', 1 );
 		$page_two = extrachill_analytics_email_event_exporter( 'person@example.com', 2 );
-		$captured['remove']();
 
 		$this->assertFalse( $page_one['done'] );
 		$this->assertTrue( $page_two['done'] );
@@ -282,7 +281,6 @@ final class EmailTrackingPrivacyTest extends Extrachill_Analytics_TestCase {
 		$this->email_event( $user_id );
 		$captured = $this->capture_queries();
 		$result   = extrachill_analytics_email_event_eraser( 'person@example.com', 1 );
-		$captured['remove']();
 
 		$this->assertTrue( $result['done'] );
 		$this->assertTrue( $result['items_removed'] );

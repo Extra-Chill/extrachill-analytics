@@ -199,7 +199,6 @@ final class GetBridgeCtrTest extends Extrachill_Analytics_TestCase {
 				'max_events' => 1001,
 			)
 		);
-		$captured['remove']();
 
 		$this->assertSame( 1001, $report['impressions'] );
 		$this->assertTrue( $report['coverage']['truncated'] );
