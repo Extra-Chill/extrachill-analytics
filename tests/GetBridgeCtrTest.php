@@ -184,11 +184,11 @@ final class GetBridgeCtrTest extends Extrachill_Analytics_TestCase {
 	 * Multi-page reads advance with an exclusive ID cursor, never an offset.
 	 */
 	public function test_keyset_pagination_uses_last_descending_id(): void {
-		$ids = array();
 		for ( $i = 0; $i < 1002; ++$i ) {
-			$ids[] = $this->event( 'bridge_impression' );
+			$this->event( 'bridge_impression' );
 		}
-		$ids = array_reverse( $ids );
+		global $wpdb;
+		$ids = array_map( 'intval', $wpdb->get_col( 'SELECT id FROM ' . extrachill_analytics_events_table() . ' ORDER BY id ASC' ) ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared, WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- plugin-owned table.
 
 		$captured = $this->capture_queries();
 		$report   = extrachill_analytics_ability_get_bridge_ctr(

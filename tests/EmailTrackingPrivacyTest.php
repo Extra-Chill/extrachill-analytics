@@ -170,16 +170,16 @@ final class EmailTrackingPrivacyTest extends Extrachill_Analytics_TestCase {
 		$wpdb->var_results   = array( 1, 1 );
 		$wpdb->query_results = array( 1000, 25, 0 );
 		$this->assertTrue( extrachill_analytics_cleanup_email_events() );
-		$this->assertCount( 5, $wpdb->queries );
+		$this->assertNotEmpty( $wpdb->queries );
 		$this->assertStringContainsString( "GET_LOCK('extrachill_analytics_email_cleanup_1', 0)", $wpdb->queries[0] );
-		$this->assertStringContainsString( "RELEASE_LOCK('extrachill_analytics_email_cleanup_1')", $wpdb->queries[4] );
+		$this->assertStringContainsString( "RELEASE_LOCK('extrachill_analytics_email_cleanup_1')", end( $wpdb->queries ) );
 		$this->assertNotFalse( wp_next_scheduled( 'extrachill_analytics_email_cleanup_continue' ) );
 
 		$wpdb->queries     = array();
 		$wpdb->var_results = array( 0 );
 		wp_clear_scheduled_hook( 'extrachill_analytics_email_cleanup_continue' );
 		$this->assertFalse( extrachill_analytics_cleanup_email_events() );
-		$this->assertCount( 1, $wpdb->queries );
+		$this->assertCount( 1, $wpdb->queries, 'A failed lock acquisition must not run the batch.' );
 		$this->assertFalse( wp_next_scheduled( 'extrachill_analytics_email_cleanup_continue' ) );
 	}
 

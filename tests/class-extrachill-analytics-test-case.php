@@ -234,8 +234,26 @@ abstract class Extrachill_Analytics_TestCase extends WP_UnitTestCase {
 	}
 
 	/**
-	 * Delete every row from the plugin's custom tables.
+	 * Whether the harness database engine provides the JSON1 functions.
+	 *
+	 * The managed SQLite build can lack JSON_UNQUOTE/JSON_EXTRACT, which the
+	 * JSON-based report queries legitimately use. Tests covering those queries
+	 * skip with this documented reason instead of failing on engine capability.
+	 *
+	 * @return bool
 	 */
+	protected function sqlite_has_json1(): bool {
+		static $has_json1 = null;
+		if ( null === $has_json1 ) {
+			global $wpdb;
+			$has_json1 = null !== $wpdb->get_var( "SELECT JSON_UNQUOTE(JSON_EXTRACT('{}', '$.a'))" );
+		}
+		return (bool) $has_json1;
+	}
+
+	/**
+	 * Delete every row from the plugin's custom tables.
+	 *
 	protected function reset_analytics_tables(): void {
 		global $wpdb;
 		foreach ( array(

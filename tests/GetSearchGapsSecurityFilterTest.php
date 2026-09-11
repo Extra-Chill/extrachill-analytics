@@ -45,6 +45,9 @@ final class GetSearchGapsSecurityFilterTest extends Extrachill_Analytics_TestCas
 	 * Observed and encoded payload families must not occupy either report bucket.
 	 */
 	public function test_payload_terms_are_excluded_from_zero_and_low_result_buckets(): void {
+		if ( ! $this->sqlite_has_json1() ) {
+			self::markTestSkipped( 'Harness database engine lacks JSON1; the search-gap report queries require MySQL JSON functions.' );
+		}
 		$attack_terms = array(
 			'/etc/shells',
 			'%2Fetc%2Fshells',

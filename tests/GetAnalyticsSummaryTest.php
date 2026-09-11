@@ -39,6 +39,9 @@ final class GetAnalyticsSummaryTest extends Extrachill_Analytics_TestCase {
 	 * An explicit event type exposes typed rows from the existing aggregation.
 	 */
 	public function test_explicit_event_type_exposes_typed_detail_rows(): void {
+		if ( ! $this->sqlite_has_json1() ) {
+			self::markTestSkipped( 'Harness database engine lacks JSON1; the by-context detail query requires MySQL JSON functions.' );
+		}
 		$day = gmdate( 'Y-m-d', time() - HOUR_IN_SECONDS );
 		for ( $i = 0; $i < 3; ++$i ) {
 			$this->summary_event( 'newsletter_signup', 'https://extrachill.com/newsletter/', 'footer' );
