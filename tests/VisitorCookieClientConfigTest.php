@@ -28,10 +28,34 @@ final class VisitorCookieClientConfigTest extends TestCase {
 	 * Set a normal first-party browser request before each test.
 	 */
 	protected function setUp(): void {
-		$_SERVER['REQUEST_METHOD']                           = 'GET';
-		$_SERVER['HTTP_HOST']                                = 'extrachill.com';
-		$GLOBALS['extrachill_analytics_test_network_domain'] = 'extrachill.com';
+		$_SERVER['REQUEST_METHOD'] = 'GET';
+		$_SERVER['HTTP_HOST']      = self::first_party_host();
 		unset( $_COOKIE[ EXTRACHILL_ANALYTICS_VISITOR_COOKIE ] );
+	}
+
+	/**
+	 * A host this install actually treats as first-party.
+	 *
+	 * `extrachill_analytics_request_host_is_first_party()` compares
+	 * `HTTP_HOST` against the resolved cookie domain, falling back to
+	 * `home_url()`. Hard-coding a production host here made every
+	 * "first-party" case in this file third-party under the managed harness —
+	 * which is silent, because the assertions those tests make
+	 * (`cookieName`, `cookieMaxAge`) are populated before the eligibility
+	 * gate and pass either way. Derive it instead.
+	 *
+	 * @return string First-party host for this install.
+	 */
+	private static function first_party_host(): string {
+		$domain = ltrim( extrachill_analytics_visitor_cookie_domain(), '.' );
+
+		if ( '' !== $domain ) {
+			return $domain;
+		}
+
+		$host = wp_parse_url( home_url( '/' ), PHP_URL_HOST );
+
+		return is_string( $host ) ? $host : 'example.org';
 	}
 
 	/**
@@ -44,7 +68,6 @@ final class VisitorCookieClientConfigTest extends TestCase {
 			$_SERVER['HTTP_SEC_GPC'],
 			$_SERVER['HTTP_DNT'],
 			$_COOKIE[ EXTRACHILL_ANALYTICS_VISITOR_COOKIE ],
-			$GLOBALS['extrachill_analytics_test_network_domain'],
 			$GLOBALS['extrachill_analytics_test_is_preview'],
 			$GLOBALS['extrachill_analytics_test_is_admin'],
 			$GLOBALS['extrachill_analytics_test_doing_ajax'],
@@ -63,31 +86,86 @@ final class VisitorCookieClientConfigTest extends TestCase {
 	}
 
 	/**
-	 * The cookie domain stays the leading-dot network root so ONE visitor id
-	 * spans every subdomain.
+	 * The resolved cookie domain is the leading-dot form of whatever network
+	 * this install actually is.
 	 *
-	 * @dataProvider first_party_host_provider
+	 * Asserts the transform, not a literal host. The previous version of this
+	 * test hard-coded `.extrachill.com` and seeded
+	 * `$GLOBALS['extrachill_analytics_test_network_domain']`, both of which
+	 * only worked because the deleted 1,020-line fake-WordPress bootstrap
+	 * (#271) fabricated a network. Under the managed harness the install is a
+	 * disposable site on an arbitrary host, so a production domain is not
+	 * available and asserting one tests the fixture rather than the code.
 	 *
-	 * @param string $host First-party network host.
+	 * The leading dot is the part that carries meaning: it is what makes one
+	 * visitor id span every subdomain instead of being re-minted per site.
 	 */
-	public function test_cookie_domain_is_the_leading_dot_network_root( $host ): void {
-		$_SERVER['HTTP_HOST'] = $host;
+	public function test_cookie_domain_is_the_leading_dot_form_of_the_network_root(): void {
+		$domain = extrachill_analytics_visitor_cookie_domain();
 
-		$config = extrachill_analytics_visitor_cookie_client_config();
+		if ( '' === $domain ) {
+			$this->assertFalse(
+				defined( 'COOKIE_DOMAIN' ) && '' !== COOKIE_DOMAIN,
+				'An empty cookie domain is only correct when neither COOKIE_DOMAIN nor a network supplies one.'
+			);
+			$this->assertFalse(
+				function_exists( 'get_network' ) && get_network() && ! empty( get_network()->domain ),
+				'A network with a domain must produce a leading-dot cookie domain, not an empty one.'
+			);
 
-		$this->assertSame( '.extrachill.com', $config['cookieDomain'] );
+			return;
+		}
+
+		$this->assertSame(
+			'.',
+			$domain[0],
+			'A non-empty cookie domain must carry the leading dot that spans subdomains.'
+		);
+		$this->assertStringNotContainsString(
+			'..',
+			$domain,
+			'The leading dot must be prefixed once, never doubled onto an already-dotted domain.'
+		);
 	}
 
 	/**
-	 * First-party public route hosts.
-	 *
-	 * @return array<string,array{string}>
+	 * The documented filter is the override seam, and it wins outright.
 	 */
-	public function first_party_host_provider() {
-		return array(
-			'network homepage' => array( 'extrachill.com' ),
-			'subdomain'        => array( 'events.extrachill.com' ),
-			'community login'  => array( 'community.extrachill.com' ),
+	public function test_cookie_domain_filter_overrides_the_resolved_value(): void {
+		$override = static fn(): string => '.override.test';
+
+		add_filter( 'extrachill_analytics_visitor_cookie_domain', $override );
+		$domain = extrachill_analytics_visitor_cookie_domain();
+		remove_filter( 'extrachill_analytics_visitor_cookie_domain', $override );
+
+		$this->assertSame( '.override.test', $domain );
+	}
+
+	/**
+	 * The localized client config carries the resolved domain verbatim, so the
+	 * browser mints against the same scope the server would have.
+	 */
+	public function test_client_config_carries_the_resolved_cookie_domain(): void {
+		$domain = extrachill_analytics_visitor_cookie_domain();
+
+		if ( '' === $domain ) {
+			$this->assertSame(
+				'',
+				extrachill_analytics_visitor_cookie_client_config()['cookieDomain'],
+				'With no resolvable cookie domain the client must mint host-scoped, not against a guess.'
+			);
+
+			return;
+		}
+
+		$_SERVER['HTTP_HOST'] = ltrim( $domain, '.' );
+
+		$config = extrachill_analytics_visitor_cookie_client_config();
+
+		$this->assertSame(
+			$domain,
+			$config['cookieDomain'],
+			'A first-party request must localize the same scope the server would have used.'
 		);
 	}
 
