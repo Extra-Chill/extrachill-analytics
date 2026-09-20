@@ -67,11 +67,7 @@ final class VisitorCookieClientConfigTest extends TestCase {
 			$_SERVER['HTTP_HOST'],
 			$_SERVER['HTTP_SEC_GPC'],
 			$_SERVER['HTTP_DNT'],
-			$_COOKIE[ EXTRACHILL_ANALYTICS_VISITOR_COOKIE ],
-			$GLOBALS['extrachill_analytics_test_is_preview'],
-			$GLOBALS['extrachill_analytics_test_is_admin'],
-			$GLOBALS['extrachill_analytics_test_doing_ajax'],
-			$GLOBALS['extrachill_analytics_test_doing_cron']
+			$_COOKIE[ EXTRACHILL_ANALYTICS_VISITOR_COOKIE ]
 		);
 	}
 
@@ -172,29 +168,83 @@ final class VisitorCookieClientConfigTest extends TestCase {
 	/**
 	 * Preview and non-template runtimes receive no mintable domain.
 	 *
+	 * Drives the real WordPress state the eligibility gate reads —
+	 * `is_preview()`, `is_admin()`, `wp_doing_ajax()`, `wp_doing_cron()` —
+	 * rather than the `$GLOBALS['extrachill_analytics_test_*']` flags this
+	 * test used to set. Those were honored only by the fake-WordPress
+	 * bootstrap #271 deleted; no production code has ever read them, so
+	 * against the managed harness every case here ran as an ordinary
+	 * template request and asserted nothing.
+	 *
 	 * @dataProvider ineligible_runtime_provider
 	 *
-	 * @param string $fixture Runtime fixture global.
+	 * @param string $runtime Runtime to enter.
 	 */
-	public function test_non_template_runtimes_receive_no_mint_domain( $fixture ): void {
-		$GLOBALS[ $fixture ] = true;
+	public function test_non_template_runtimes_receive_no_mint_domain( $runtime ): void {
+		$restore = $this->enter_runtime( $runtime );
 
-		$config = extrachill_analytics_visitor_cookie_client_config();
+		try {
+			$config = extrachill_analytics_visitor_cookie_client_config();
 
-		$this->assertSame( '', $config['cookieDomain'] );
+			$this->assertSame(
+				'',
+				$config['cookieDomain'],
+				sprintf( 'A %s runtime must not localize a mintable cookie domain.', $runtime )
+			);
+		} finally {
+			$restore();
+		}
 	}
 
 	/**
-	 * Runtime fixture globals.
+	 * Enter a non-template runtime, returning its undo.
+	 *
+	 * @param string $runtime Runtime key.
+	 * @return callable Restores the prior state.
+	 */
+	private function enter_runtime( string $runtime ): callable {
+		switch ( $runtime ) {
+			case 'ajax':
+			case 'cron':
+				$hook = 'ajax' === $runtime ? 'wp_doing_ajax' : 'wp_doing_cron';
+				add_filter( $hook, '__return_true' );
+
+				return static function () use ( $hook ): void {
+					remove_filter( $hook, '__return_true' );
+				};
+
+			case 'admin':
+				set_current_screen( 'edit.php' );
+
+				return static function (): void {
+					set_current_screen( 'front' );
+				};
+
+			case 'preview':
+				global $wp_query;
+				$prior                = $wp_query->is_preview;
+				$wp_query->is_preview = true;
+
+				return static function () use ( $prior ): void {
+					global $wp_query;
+					$wp_query->is_preview = $prior;
+				};
+		}
+
+		$this->fail( sprintf( 'Unknown runtime fixture "%s".', $runtime ) );
+	}
+
+	/**
+	 * Non-template runtimes the eligibility gate must refuse.
 	 *
 	 * @return array<string,array{string}>
 	 */
 	public function ineligible_runtime_provider() {
 		return array(
-			'preview' => array( 'extrachill_analytics_test_is_preview' ),
-			'admin'   => array( 'extrachill_analytics_test_is_admin' ),
-			'ajax'    => array( 'extrachill_analytics_test_doing_ajax' ),
-			'cron'    => array( 'extrachill_analytics_test_doing_cron' ),
+			'preview' => array( 'preview' ),
+			'admin'   => array( 'admin' ),
+			'ajax'    => array( 'ajax' ),
+			'cron'    => array( 'cron' ),
 		);
 	}
 
