@@ -256,7 +256,7 @@ function extrachill_analytics_detect_request_origin() {
 		return 'cli';
 	}
 
-	if ( function_exists( 'wp_doing_cron' ) ? wp_doing_cron() : ( defined( 'DOING_CRON' ) && DOING_CRON ) ) {
+	if ( wp_doing_cron() ) {
 		return 'cron';
 	}
 
