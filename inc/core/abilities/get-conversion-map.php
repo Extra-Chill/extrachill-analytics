@@ -328,10 +328,7 @@ function extrachill_analytics_compute_conversion_map( $input ) {
 	}
 	$journeys_by_visitor = array();
 
-	$platform_id_to_key = array();
-	foreach ( $platform as $key => $bid ) {
-		$platform_id_to_key[ (int) $bid ] = $key;
-	}
+	$platform_id_to_key = extrachill_analytics_conversion_measured_platform_map( $platform, $entry_blog_id );
 
 	// Walk the ordered stream visitor by visitor.
 	$current_visitor = null;
@@ -1375,6 +1372,28 @@ function extrachill_analytics_conversion_is_mature_surface_entry_session( $event
  */
 function extrachill_analytics_conversion_is_measured_platform_event( $event, $platform_id_to_key ) {
 	return isset( $platform_id_to_key[ (int) ( $event['blog_id'] ?? 0 ) ] );
+}
+
+/**
+ * Map measured platform blog IDs to their outcome keys, excluding the entry blog.
+ *
+ * The entry surface can't also count as a destination: with the events entry
+ * surface, the entry session's own events pageviews would otherwise mark every
+ * journey as having "reached events".
+ *
+ * @param array<string,int> $platform      Platform key => blog ID.
+ * @param int               $entry_blog_id Entry blog ID.
+ * @return array<int,string> Blog ID => platform key.
+ */
+function extrachill_analytics_conversion_measured_platform_map( $platform, $entry_blog_id ) {
+	$map = array();
+	foreach ( $platform as $key => $bid ) {
+		if ( (int) $bid === (int) $entry_blog_id ) {
+			continue;
+		}
+		$map[ (int) $bid ] = $key;
+	}
+	return $map;
 }
 
 /**

@@ -234,6 +234,17 @@ final class ConversionMapScopeTest extends Extrachill_Analytics_TestCase {
 	}
 
 	/**
+	 * The entry surface is never counted as a destination of its own journey.
+	 */
+	public function test_entry_blog_is_excluded_from_measured_destinations(): void {
+		$platform = array( 'events' => 7, 'community' => 2, 'artist' => 4 );
+
+		$this->assertSame( array( 7 => 'events', 2 => 'community', 4 => 'artist' ), extrachill_analytics_conversion_measured_platform_map( $platform, 1 ) );
+		$this->assertSame( array( 2 => 'community', 4 => 'artist' ), extrachill_analytics_conversion_measured_platform_map( $platform, 7 ) );
+		$this->assertFalse( extrachill_analytics_conversion_is_measured_platform_event( array( 'blog_id' => 7 ), extrachill_analytics_conversion_measured_platform_map( $platform, 7 ) ) );
+	}
+
+	/**
 	 * Machine consumers receive complete canonical article identity and typed metrics.
 	 */
 	public function test_article_identity_and_metrics_are_machine_readable(): void {
