@@ -97,6 +97,12 @@ function extrachill_analytics_register_conversion_map_ability() {
 						'description' => __( 'Number of days to look back for the window. Default 28.', 'extrachill-analytics' ),
 						'default'     => 28,
 					),
+					'entry_surface'           => array(
+						'type'        => 'string',
+						'enum'        => array( 'blog_editorial', 'events' ),
+						'default'     => 'blog_editorial',
+						'description' => __( 'Entry surface to measure: blog_editorial (default) or published events-site singular pages.', 'extrachill-analytics' ),
+					),
 					'session_gap_mins'        => array(
 						'type'        => 'integer',
 						'description' => __( 'Inactivity gap (minutes) that ends a session. Default 30 (GA-standard).', 'extrachill-analytics' ),
@@ -195,6 +201,7 @@ function extrachill_analytics_ability_get_conversion_map( $input ) {
 		'min_entry_sessions'      => isset( $input['min_entry_sessions'] ) ? max( 1, (int) $input['min_entry_sessions'] ) : 1,
 		'return_observation_days' => isset( $input['return_observation_days'] ) ? max( 0, (int) $input['return_observation_days'] ) : 7,
 		'author_id'               => isset( $input['author_id'] ) ? max( 0, (int) $input['author_id'] ) : 0,
+		'entry_surface'           => in_array( (string) ( $input['entry_surface'] ?? 'blog_editorial' ), array( 'blog_editorial', 'events' ), true ) ? (string) ( $input['entry_surface'] ?? 'blog_editorial' ) : 'blog_editorial',
 		'start_date'              => $date_range ? $date_range['start_date'] : '',
 		'end_date'                => $date_range ? $date_range['end_date'] : '',
 	);
@@ -234,8 +241,9 @@ function extrachill_analytics_compute_conversion_map( $input ) {
 	$event_type = defined( 'EC_ANALYTICS_EVENT_PAGEVIEW' ) ? EC_ANALYTICS_EVENT_PAGEVIEW : 'pageview';
 
 	$surfaces      = extrachill_analytics_conversion_surface_map();
-	$entry_blog_id = (int) $surfaces['entry_blog_id'];
 	$platform      = $surfaces['platform'];
+	$entry_surface = (string) ( $input['entry_surface'] ?? 'blog_editorial' );
+	$entry_blog_id = 'events' === $entry_surface ? (int) $platform['events'] : (int) $surfaces['entry_blog_id'];
 
 	$now_ts        = time();
 	$now_utc       = gmdate( 'Y-m-d H:i:s', $now_ts );
@@ -334,6 +342,7 @@ function extrachill_analytics_compute_conversion_map( $input ) {
 		$visitor_id
 	) use (
 		$entry_blog_id,
+		$entry_surface,
 		$platform_id_to_key,
 		$gap_secs,
 		$since,
@@ -369,7 +378,7 @@ function extrachill_analytics_compute_conversion_map( $input ) {
 		// journeys, not every entry session a repeat reader starts.
 		$entry_index = null;
 		foreach ( $sessions as $i => $sess ) {
-			if ( extrachill_analytics_conversion_is_mature_entry_session( $sess[0], $entry_blog_id, $since, $mature_before, $author_id ) ) {
+			if ( extrachill_analytics_conversion_is_mature_surface_entry_session( $sess[0], $entry_blog_id, $entry_surface, $since, $mature_before, $author_id ) ) {
 				$entry_index = $i;
 				break;
 			}
@@ -595,6 +604,7 @@ function extrachill_analytics_compute_conversion_map( $input ) {
 		'by_article'                  => $article_rank,
 		'by_category'                 => $category_rank,
 		'entry_blog_id'               => $entry_blog_id,
+		'entry_surface'               => $entry_surface,
 		'author_id'                   => $author_id,
 		'platform_blogs'              => $platform,
 		'outcomes'                    => array(
@@ -1329,6 +1339,31 @@ function extrachill_analytics_conversion_is_mature_entry_session( $event, $entry
 	return $timestamp >= strtotime( $since )
 		&& $timestamp <= strtotime( $mature_before )
 		&& extrachill_analytics_conversion_is_editorial_entry( $event, $entry_blog_id, $author_id );
+}
+
+/**
+ * Validate an entry against the selected entry surface.
+ *
+ * @param array  $event         Session-start event.
+ * @param int    $entry_blog_id Entry blog.
+ * @param string $entry_surface blog_editorial or events.
+ * @param string $since         Inclusive window start.
+ * @param string $mature_before Maturity cutoff.
+ * @param int    $author_id     Optional primary author filter.
+ * @return bool Whether the session is an eligible entry.
+ */
+function extrachill_analytics_conversion_is_mature_surface_entry_session( $event, $entry_blog_id, $entry_surface, $since, $mature_before, $author_id = 0 ) {
+	if ( 'blog_editorial' === $entry_surface ) {
+		return extrachill_analytics_conversion_is_mature_entry_session( $event, $entry_blog_id, $since, $mature_before, $author_id );
+	}
+
+	$timestamp = (int) ( $event['ts'] ?? 0 );
+	if ( $timestamp < strtotime( $since ) || $timestamp > strtotime( $mature_before ) || (int) ( $event['blog_id'] ?? 0 ) !== (int) $entry_blog_id ) {
+		return false;
+	}
+	$post = extrachill_analytics_get_blog_post( $entry_blog_id, (int) ( $event['post_id'] ?? 0 ) );
+	return $post && 'publish' === $post->post_status && 'attachment' !== $post->post_type
+		&& ( $author_id <= 0 || (int) $post->post_author === (int) $author_id );
 }
 
 /**

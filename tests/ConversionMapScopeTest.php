@@ -220,6 +220,20 @@ final class ConversionMapScopeTest extends Extrachill_Analytics_TestCase {
 	}
 
 	/**
+	 * Events entry selection admits published event/location singulars while
+	 * the default blog-editorial lens continues to admit published posts only.
+	 */
+	public function test_events_surface_entry_scope_is_additive_to_blog_default(): void {
+		$post = $this->scope_post( array() );
+		$page = $this->scope_post( array( 'post_type' => 'page' ) );
+		$event = array( 'blog_id' => 1, 'post_id' => $page, 'ts' => strtotime( '2026-07-05 12:00:00' ) );
+
+		$this->assertTrue( extrachill_analytics_conversion_is_mature_surface_entry_session( $event, 1, 'events', '2026-07-01 00:00:00', '2026-07-08 00:00:00' ) );
+		$this->assertFalse( extrachill_analytics_conversion_is_mature_surface_entry_session( $event, 1, 'blog_editorial', '2026-07-01 00:00:00', '2026-07-08 00:00:00' ) );
+		$this->assertTrue( extrachill_analytics_conversion_is_mature_surface_entry_session( array( 'blog_id' => 1, 'post_id' => $post, 'ts' => $event['ts'] ), 1, 'blog_editorial', '2026-07-01 00:00:00', '2026-07-08 00:00:00' ) );
+	}
+
+	/**
 	 * Machine consumers receive complete canonical article identity and typed metrics.
 	 */
 	public function test_article_identity_and_metrics_are_machine_readable(): void {
