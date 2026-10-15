@@ -14,7 +14,10 @@
 		}
 		if ( window.crypto && typeof window.crypto.getRandomValues === 'function' ) {
 			const bytes = window.crypto.getRandomValues( new Uint8Array( 16 ) );
+			// RFC 4122 v4 version/variant bits.
+			// eslint-disable-next-line no-bitwise
 			bytes[ 6 ] = ( bytes[ 6 ] & 0x0f ) | 0x40;
+			// eslint-disable-next-line no-bitwise
 			bytes[ 8 ] = ( bytes[ 8 ] & 0x3f ) | 0x80;
 			const hex = Array.from( bytes, ( byte ) =>
 				byte.toString( 16 ).padStart( 2, '0' )
@@ -135,7 +138,9 @@
 				input[ name ] = value.slice( 0, 128 );
 			}
 		} );
-	} catch ( e ) {}
+	} catch {
+		// Malformed query strings carry no attribution.
+	}
 
 	const data = JSON.stringify( { input } );
 
