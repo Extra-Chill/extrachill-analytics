@@ -123,6 +123,20 @@
 		input.referrer = document.referrer;
 	}
 
+	// Campaign parameters are the only provenance email and app clicks carry:
+	// those clients send no referrer, so a newsletter click otherwise lands as
+	// direct traffic. Only the three utm_* values are forwarded; the server
+	// normalizes each to a bounded slug and drops anything else.
+	try {
+		const params = new URLSearchParams( window.location.search );
+		[ 'utm_source', 'utm_medium', 'utm_campaign' ].forEach( ( name ) => {
+			const value = params.get( name );
+			if ( value ) {
+				input[ name ] = value.slice( 0, 128 );
+			}
+		} );
+	} catch ( e ) {}
+
 	const data = JSON.stringify( { input } );
 
 	if ( window.navigator.sendBeacon ) {
