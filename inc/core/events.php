@@ -82,7 +82,7 @@ function extrachill_track_analytics_event( $event_type, $event_data = array(), $
 	if ( function_exists( 'extrachill_analytics_request_turnstile_rejected' )
 		&& extrachill_analytics_request_turnstile_rejected()
 	) {
-		$event_data['is_bot'] = true;
+		$event_data['is_bot']     = true;
 		$event_data['bot_reason'] = 'turnstile_rejected';
 	}
 

@@ -24,6 +24,7 @@ function extrachill_analytics_request_turnstile_rejected() {
  * @param mixed  $request_or_token Rejected request or token (not persisted).
  * @return void
  */
+// phpcs:ignore VariableAnalysis.CodeAnalysis.VariableAnalysis.UnusedVariable,Generic.CodeAnalysis.UnusedFunctionParameter.FoundAfterLastUsed,Generic.CodeAnalysis.UnusedFunctionParameter.Found -- extrachill_turnstile_rejected action signature; captcha data is deliberately not persisted.
 function extrachill_analytics_on_turnstile_rejected( $error_code, $request_or_token ) {
 	global $wpdb;
 
@@ -66,10 +67,19 @@ add_action( 'extrachill_turnstile_rejected', 'extrachill_analytics_on_turnstile_
 function extrachill_analytics_backfill_solver_bots( $args = array() ) {
 	global $wpdb;
 
-	$args = wp_parse_args( $args, array( 'blog_id' => 0, 'batch_size' => 2000, 'live' => false ) );
-	$table = extrachill_analytics_events_table();
-	$totals = array( 'scanned' => 0, 'stamped_bot' => 0, 'batches' => 0, 'live' => (bool) $args['live'] );
-	$last_id = 0;
+	$args       = wp_parse_args( $args, array(
+		'blog_id'    => 0,
+		'batch_size' => 2000,
+		'live'       => false,
+	) );
+	$table      = extrachill_analytics_events_table();
+	$totals     = array(
+		'scanned'     => 0,
+		'stamped_bot' => 0,
+		'batches'     => 0,
+		'live'        => (bool) $args['live'],
+	);
+	$last_id    = 0;
 	$batch_size = max( 1, (int) $args['batch_size'] );
 
 	// A SELECT followed by an id-bounded UPDATE avoids MySQL's self-update
@@ -98,23 +108,27 @@ function extrachill_analytics_backfill_solver_bots( $args = array() ) {
 		if ( empty( $rows ) ) {
 			break;
 		}
-		$ids = array_map( 'intval', wp_list_pluck( $rows, 'id' ) );
-		$last_id = max( $ids );
+		$row_count          = count( $rows );
+		$ids                = array_map( 'intval', wp_list_pluck( $rows, 'id' ) );
+		$last_id            = max( $ids );
 		$totals['scanned'] += count( $ids );
 		++$totals['batches'];
 		if ( $args['live'] ) {
 			$placeholders = implode( ', ', array_fill( 0, count( $ids ), '%d' ) );
-			$updated = $wpdb->query( $wpdb->prepare(
-				"UPDATE {$table} SET event_data = JSON_SET(event_data, '$.is_bot', JSON_EXTRACT('true', '$'), '$.bot_reason', 'solver_signature') WHERE id IN ({$placeholders})",
-				$ids
-			) );
+			$updated      = $wpdb->query(
+				$wpdb->prepare(
+					// phpcs:ignore WordPress.DB.PreparedSQLPlaceholders.UnfinishedPrepare,WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- %d placeholders are built dynamically from $ids.
+					"UPDATE {$table} SET event_data = JSON_SET(event_data, '$.is_bot', JSON_EXTRACT('true', '$'), '$.bot_reason', 'solver_signature') WHERE id IN ({$placeholders})",
+					$ids
+				)
+			);
 			if ( false === $updated ) {
 				$totals['error'] = $wpdb->last_error;
 				break;
 			}
 			$totals['stamped_bot'] += $updated;
 		}
-	} while ( count( $rows ) === $batch_size );
+	} while ( $row_count === $batch_size );
 	// phpcs:enable WordPress.DB.PreparedSQL.InterpolatedNotPrepared
 	return $totals;
 }
@@ -129,8 +143,8 @@ if ( defined( 'WP_CLI' ) && WP_CLI ) {
 	function extrachill_analytics_cli_backfill_solver_bots( $pos_args, $assoc_args ) {
 		$result = extrachill_analytics_backfill_solver_bots(
 			array(
-				'live' => isset( $assoc_args['live'] ),
-				'blog_id' => (int) ( $assoc_args['blog'] ?? 0 ),
+				'live'       => isset( $assoc_args['live'] ),
+				'blog_id'    => (int) ( $assoc_args['blog'] ?? 0 ),
 				'batch_size' => (int) ( $assoc_args['batch-size'] ?? 2000 ),
 			)
 		);

@@ -185,7 +185,7 @@ function extrachill_analytics_classify_request( $context = array() ) {
 	if ( function_exists( 'extrachill_analytics_request_turnstile_rejected' )
 		&& extrachill_analytics_request_turnstile_rejected()
 	) {
-		$is_human = false;
+		$is_human                      = false;
 		$signals['turnstile_rejected'] = true;
 	}
 
