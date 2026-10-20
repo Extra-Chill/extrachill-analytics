@@ -110,7 +110,7 @@ function extrachill_analytics_backfill_solver_bots( $args = array() ) {
 		}
 		$row_count          = count( $rows );
 		$ids                = array_map( 'intval', wp_list_pluck( $rows, 'id' ) );
-		$last_id            = max( $ids );
+		$last_id            = (int) end( $ids );
 		$totals['scanned'] += count( $ids );
 		++$totals['batches'];
 		if ( $args['live'] ) {
@@ -151,7 +151,7 @@ if ( defined( 'WP_CLI' ) && WP_CLI ) {
 		if ( isset( $result['error'] ) ) {
 			WP_CLI::error( $result['error'] );
 		}
-		WP_CLI::log( wp_json_encode( $result ) );
+		WP_CLI::log( (string) wp_json_encode( $result ) );
 	}
 	WP_CLI::add_command( 'extrachill-analytics backfill-solver-bots', 'extrachill_analytics_cli_backfill_solver_bots' );
 }
