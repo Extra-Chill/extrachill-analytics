@@ -999,8 +999,9 @@ function extrachill_analytics_format_fatal_alarm_message( $alarm, $with_mention 
  *
  * This is the spawned coding-agent session's entire context, so it must be
  * self-contained: it @mentions the configured human, states the incident, and
- * guides root-cause investigation, issue filing, and Homeboy cooking through
- * a fix PR. Merging, releasing, and deploying remain operator-owned.
+ * guides evidence-based issue filing and Homeboy cooking through a fix PR.
+ * Site-breaking fatals may proceed through squash-merge and emergency deploy;
+ * all other fixes remain PR-only for operator merging.
  *
  * @param array $alarm One alarm row from the evaluator.
  * @return string Prompt body.
@@ -1011,9 +1012,7 @@ function extrachill_analytics_format_fatal_alarm_fix_prompt( $alarm ) {
 	$lines = array(
 		$mention . '🚨 **PHP fatal alarm — investigate and fix.**',
 		'',
-		'A PHP fatal is firing on the live network RIGHT NOW (' . extrachill_analytics_fatal_alarm_reason_text( $alarm ) . ').',
-		'',
-		'**Goal:** Investigate the root cause and get a fix up as a PR.',
+		'Live fatal: ' . extrachill_analytics_fatal_alarm_reason_text( $alarm ) . '. **Goal:** root-cause and fix it.',
 		'',
 		'**Fatal details (from the live debug.log tail):**',
 		'- Severity: ' . strtoupper( (string) $alarm['severity'] ),
@@ -1023,8 +1022,9 @@ function extrachill_analytics_format_fatal_alarm_fix_prompt( $alarm ) {
 		'- First seen: ' . $alarm['first_seen'] . ' UTC · Last seen: ' . $alarm['last_seen'] . ' UTC',
 		'- Sample: `' . substr( (string) $alarm['sample'], 0, 240 ) . '`',
 		'',
-		'**Workflow:** Confirm with `wp extrachill analytics errors --since=1h --severity=fatal`; `grep` the location in the read-only plugin/theme tree to find the owning repo. File a GitHub issue there with the fatal evidence pasted in, then cook it with `homeboy agent-task cook` (one cook per issue). Report the issue URL and PR URL back. The run ends at the PR; merging, releasing, and deploying are operator-owned.',
-		'If it has stopped firing but evidence shows a real defect, still file the issue and cook it, then report back. Stop without an issue only when nothing points at a real defect. Base any fix on evidence.',
+		'**Workflow:** Verify: `wp extrachill analytics errors --since=1h --severity=fatal`; `grep` the read-only plugin/theme tree for the owning repo. File an issue there with fatal evidence; `homeboy agent-task cook` (one cook per issue). If it stopped, still file and cook any real defect.',
+		'**Site-breaking:** Still firing on a request path with page/front-door 500s reproduced via `curl` or sustained high rate on a core path: if fix is minimal, revertable and PR CI green, squash-merge: `gh api -X PUT repos/<owner>/<repo>/pulls/<n>/merge -f merge_method=squash`. Wait for release; dispatch extrachill-network `deploy.yml` for that one component, stating emergency. Confirm signature stopped: `wp extrachill analytics errors --since=15m --severity=fatal`, and affected site returns 200.',
+		'**Otherwise PR-only:** cron/CLI-only, contained, multi-repo/migration, red CI or uncertain root cause: end at PR; operator merges. Report issue/PR URLs and actions.',
 	);
 
 	$prompt = implode( "\n", $lines );
